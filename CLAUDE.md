@@ -25,6 +25,14 @@ Copiare `_template/`. Ogni cartella tool contiene:
 - `README.md`: scopo, requisiti, parametri, esempi, output, changelog
 - opzionale `config.example.json` (il `config.json` reale è in `.gitignore`)
 
+Standard dei tool (modello: `rds/fslogix/compact-vhdx` e i migratori FSLogix):
+- **configurabili da GUI**: ogni impostazione è un campo con descrizione, salvabile in JSON (`%ProgramData%\FispaTools\<Tool>\config.json`), con Salva come / Carica per più ambienti; i default mancanti si fondono con quelli del tool
+- **anche senza GUI**: `-NoGui -ConfigPath <json>` per console e operazioni pianificate, codici di uscita significativi
+- **robusti**: lavoro lungo in background (runspace) con GUI reattiva, annullamento pulito, simulazione attiva di default, conferma prima di agire, codici di uscita di robocopy/icacls/diskpart/exe sempre controllati, cleanup in `finally`, log + report CSV
+- **nessuna dipendenza evitabile**: es. SID ↔ utente con .NET invece del modulo ActiveDirectory, permessi per SID (indipendenti dalla lingua), dischi montati su cartella invece che su lettera
+- file `.ps1` in **UTF-8 con BOM** (PowerShell 5.1 legge male i file senza BOM)
+- codice condiviso tra più tool: sorgenti comuni + build (vedi `rds/fslogix/_migrator-src`), i file finali restano single-file
+
 Script PowerShell:
 - header con `.SYNOPSIS`, `.DESCRIPTION`, `.PARAMETER`, `.EXAMPLE`, `.NOTES` (versione)
 - `[CmdletBinding()]`, `SupportsShouldProcess` per tutto ciò che modifica qualcosa

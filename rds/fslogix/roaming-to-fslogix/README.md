@@ -1,64 +1,70 @@
 # roaming-to-fslogix — Profili Roaming → FSLogix
 
-Questo strumento è uno script PowerShell basato su interfaccia grafica (GUI) progettato per semplificare e automatizzare la migrazione massiva dei profili utente Windows dal formato Roaming (es. condivisioni di rete con cartelle `.V6`) al formato VHDX nativo di FSLogix.
+Migra i profili Roaming (cartelle `utente.V6`, `utente.V2`, …) in nuovi dischi FSLogix. La cartella Roaming originale non viene modificata.
 
-## 🚀 Caratteristiche Principali
+## Requisiti
+- Windows Server 2012 R2+ / Windows 10+, PowerShell 5.1
+- Amministratore (la GUI chiede l'elevazione da sola)
+- `diskpart`, `robocopy`, cmdlet `Mount-DiskImage` (presenti di serie)
+- Macchina nel dominio. **Non serve il modulo ActiveDirectory**
 
-* **Interfaccia Grafica Integrata:** Utilizza `System.Windows.Forms` per la selezione intuitiva delle directory di origine e destinazione.
-* **Selezione Utenti Dinamica:** Interfaccia basata su `Out-GridView` per selezionare singolarmente o massivamente gli utenti da migrare.
-* **Creazione VHDX Affidabile:** Sfrutta `DiskPart` per garantire la massima compatibilità nella creazione e formattazione (NTFS) dei dischi virtuali espandibili.
-* **Copia ad Alte Prestazioni:** Utilizza `Robocopy` in modalità multi-thread (`/MT:8`) per il trasferimento dei dati, gestendo i file bloccati o in uso.
-* **Iniezione Registro di Sistema:** Genera automaticamente il file `ProfileData.reg` all'interno del VHDX per indicare a FSLogix il corretto `ProfileImagePath`.
-* **Sicurezza e Permessi:** Applica in automatico le ACL (Permessi NTFS) corrette sulla cartella contenitore del profilo tramite `icacls`, assegnando i diritti all'utente, a SYSTEM e agli Amministratori.
-* **Safe-Fail & Test:** Contiene test di validazione continui (verifica percorsi, montaggio/smontaggio sicuro, controllo dimensioni file) per prevenire corruzioni dei dati.
+## Uso
 
-## 📋 Prerequisiti
-
-Prima di eseguire lo script, assicurarsi che il sistema soddisfi i seguenti requisiti:
-
-1. **Privilegi di Amministratore:** Lo script deve essere eseguito da una console PowerShell avviata come Amministratore.
-2. **Modulo Active Directory:** Necessario per risolvere i nomi utente (SAM) nei rispettivi SID (`Install-WindowsFeature RSAT-AD-PowerShell`).
-3. **Permessi di Lettura/Scrittura:** L'account che esegue lo script deve avere privilegi di lettura sulla share Roaming sorgente e di controllo completo sulla share FSLogix di destinazione.
-
-## 🛠️ Istruzioni per l'Uso
-
-1. Scaricare o copiare lo script sul server o sulla workstation di management.
-2. Aprire PowerShell come Amministratore.
-3. Eseguire lo script:
 ```powershell
 .\Convert-RoamingProfileToFSLogix.ps1
-
 ```
 
+1. **Configurazione**: percorsi, dominio, formato e dimensione del disco, opzioni di copia. *Salva* scrive in `%ProgramData%\FispaTools\RoamingToFSLogix\config.json`; *Salva come* / *Carica* per più ambienti.
+2. **Profili** → *Analizza*: per ogni cartella ricava l'utente (togliendo il suffisso `.V6`) e ne risolve il SID nel dominio. Non selezionabili: utente non trovato, escluso. In arancione: `NTUSER.DAT` assente o disco FSLogix già presente.
+3. Spunta i profili → **Avvia migrazione** → conferma con riepilogo.
+4. **Log** in tempo reale; *Annulla* completa il profilo in corso e si ferma.
 
-4. **Seleziona Sorgente:** Si aprirà una finestra di dialogo. Selezionare la directory radice che contiene i profili Roaming (es. `\\Server\Profili$`).
-5. **Seleziona Destinazione:** Selezionare la directory radice dove verranno creati i contenitori FSLogix (es. `\\Server\FSLogix$`).
-6. **Dimensione VHDX:** Verrà richiesto di inserire la dimensione massima in MB per i dischi virtuali (il valore predefinito è `30000` MB, ovvero ~30GB).
-7. **Selezione Utenti:** Si aprirà una griglia (Grid View). Selezionare le righe corrispondenti agli utenti che si desidera migrare e cliccare su **OK** (in basso a destra).
-* *Nota: Se il sistema rileva un disco già esistente nella destinazione, verrà richiesto se si desidera sovrascriverlo o saltare l'utente.*
+La **simulazione è attiva di default**.
 
+### Senza GUI
 
+```powershell
+.\Convert-RoamingProfileToFSLogix.ps1 -NoGui
+.\Convert-RoamingProfileToFSLogix.ps1 -NoGui -ConfigPath D:\Mig\roaming.json -User mario.rossi -Simulate
+```
+Codici di uscita: `0` ok, `1` configurazione non valida, `2` almeno un profilo fallito.
 
-## 📊 Flusso di Lavoro per Singolo Utente
+## Parametri della configurazione
 
-Per ogni utente selezionato, lo script esegue le seguenti operazioni:
+| Campo | Default | Note |
+|---|---|---|
+| Cartella profili Roaming | — | Es. `\\SRV01\Profili$` |
+| Cartella FSLogix | — | Locale o UNC |
+| Dominio (NetBIOS) | dominio dell'utente corrente | Dove cercare gli utenti |
+| Suffisso da togliere | `\.V\d+$` | Regex; `mario.rossi.V6` → `mario.rossi` |
+| Formato | dal registro FSLogix, altrimenti VHDX | VHDX / VHD |
+| Dimensione massima (MB) | dal registro FSLogix, altrimenti 30000 | |
+| Tipo disco | dal registro FSLogix, altrimenti Dinamico | Dinamico / Fisso |
+| Nome cartella utente / Nome disco | come FSLogix | `%sid%_%username%`, `Profile_%username%` |
+| Cartella profili sul session host | `C:\Users` | Per `ProfileData.reg` |
+| Thread / tentativi robocopy | 8 / 2 | `/MT`, `/R` |
+| Cartelle da non copiare | — | Passate a `robocopy /XD` |
+| Se il disco esiste già | Salta | Salta / Rinomina / Sovrascrivi |
+| Permessi dentro il disco | sì | robocopy non copia le ACL: l'utente diventa owner di `\Profile` |
+| Permessi sulla cartella utente | sì | Per SID: utente, SYSTEM, Administrators |
+| Elimina il disco se fallisce | sì | |
+| Utenti esclusi | — | Separati da `;` |
+| Cartella log e report | `%ProgramData%\FispaTools\RoamingToFSLogix\Log` | Anche i log robocopy per utente |
+| Simulazione | sì | |
 
-1. Verifica l'accessibilità dei percorsi.
-2. Crea la cartella contenitore nel formato `SID_samaccountname`.
-3. Crea un file `.vhdx` espandibile e lo formatta tramite `DiskPart`.
-4. Monta il VHDX sul sistema.
-5. Usa `Robocopy` per clonare il contenuto della cartella Roaming all'interno della cartella `Profile` del VHDX.
-6. Crea le chiavi di registro necessarie per FSLogix (`ProfileData.reg`).
-7. Smonta il VHDX.
-8. Imposta i permessi NTFS sulla cartella contenitore dell'utente.
+## Cosa fa per ogni utente
+1. Gestisce un disco già presente; con disco fisso verifica lo spazio libero.
+2. Crea il disco con `diskpart` (controllando il codice di uscita), partizione NTFS etichettata `Profile`.
+3. Lo monta su una cartella temporanea (nessuna lettera di unità) e copia il profilo in `\Profile`: `robocopy /E /ZB /COPY:DAT /DCOPY:DAT /XJ`, log per utente.
+4. Imposta owner e permessi dell'utente su `\Profile`, crea `ProfileData.reg`.
+5. Smonta, imposta owner e permessi sulla cartella utente, verifica il disco finale.
+6. Se qualcosa fallisce: smonta comunque e, se configurato, elimina il disco incompleto.
 
-Al termine, lo script stamperà un report statistico con il numero di migrazioni completate con successo, saltate o fallite.
-
-## ⚠️ Note di Sicurezza e Troubleshooting
-
-* **Utenti Disconnessi:** È caldamente consigliato eseguire la migrazione quando gli utenti target *non* sono connessi, per evitare che `Robocopy` trovi file bloccati (es. `NTUSER.DAT` in uso).
-* **Gestione Errori:** In caso di errore critico durante la copia, il blocco `finally` assicura che il disco VHDX venga comunque smontato per non lasciare partizioni "fantasma" appese al server di management.
+## Output
+- Log: `<cartella log>\RoamingToFSLogix_<data>.log`, `robocopy_<utente>.log`
+- Report: `<cartella log>\RoamingToFSLogix_Report_<data>.csv`
 
 ## Changelog
-- **1.0.1** — importato in `fispas/tools` dal repo `fispas/fslogix-RoamingProfile-migrator`; script rinominato secondo convenzione; rimossi i delimitatori markdown (```powershell) a inizio/fine file che impedivano l'esecuzione
-- **1.1.0** — rimossi riferimenti aziendali dall'header, esempi di percorso neutri (`\\SRV01\...`)
+- **2.0.0** — riscritto: GUI a schede con configurazione salvabile, analisi con stato per utente, simulazione di default, esecuzione in background con annullamento pulito, modalità `-NoGui`. Formato, tipo disco, dominio, suffisso e opzioni robocopy configurabili. Nessuna domanda da console. Niente modulo ActiveDirectory. Controllo del codice di uscita di diskpart. Montaggio senza lettera di unità. `/XJ` contro i loop sui junction. Permessi dell'utente anche dentro il disco (la 1.x non li impostava). Permessi per SID con controllo errori. Pulizia dei dischi incompleti. Report CSV.
+- **1.1.0** — rimossi riferimenti aziendali dall'header, esempi di percorso neutri.
+- **1.0.1** — importato in `fispas/tools` dal repo `fispas/fslogix-RoamingProfile-migrator`; rimossi i delimitatori markdown che impedivano l'esecuzione.

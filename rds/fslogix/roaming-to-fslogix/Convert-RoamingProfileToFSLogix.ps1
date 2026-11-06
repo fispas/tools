@@ -1,341 +1,1192 @@
-<#
+﻿<#
 .SYNOPSIS
-    Converte profili Roaming (es. cartelle .V6) in formato FSLogix con selezione manuale via GUI.
+    Migra i profili Roaming (cartelle utente.V6 e simili) in contenitori FSLogix, con GUI configurabile.
 
 .DESCRIPTION
-    Richiede interattivamente tramite interfaccia grafica (Windows Forms) le directory
-    di origine (condivisione Roaming) e destinazione (FSLogix). Utilizza Out-GridView 
-    per la selezione degli utenti. Crea un nuovo VHDX, vi copia il contenuto del profilo 
-    Roaming tramite Robocopy, imposta le chiavi di registro necessarie e i permessi NTFS.
+    Per ogni cartella profilo selezionata:
+      - ricava l'utente dal nome cartella e ne risolve il SID (senza modulo ActiveDirectory)
+      - crea un nuovo disco VHD/VHDX (dinamico o fisso) con diskpart e lo formatta NTFS
+      - monta il disco su una cartella temporanea e copia il profilo in \Profile con robocopy
+      - imposta owner e permessi dell'utente dentro il disco, crea ProfileData.reg
+      - smonta, imposta owner e permessi sulla cartella utente
+    La cartella Roaming originale non viene modificata.
+    Senza parametri apre la GUI: configurazione salvabile, analisi, selezione, simulazione,
+    avanzamento, annullamento pulito, log e report CSV. Con -NoGui usa la configurazione salvata.
+
+.PARAMETER ConfigPath
+    File di configurazione JSON. Default: %ProgramData%\FispaTools\RoamingToFSLogix\config.json
+
+.PARAMETER NoGui
+    Esecuzione senza interfaccia (console, operazioni pianificate).
+
+.PARAMETER User
+    Con -NoGui: elabora solo questi SamAccountName.
+
+.PARAMETER Simulate
+    Con -NoGui: forza la simulazione, nessuna modifica.
+
+.EXAMPLE
+    .\Convert-RoamingProfileToFSLogix.ps1
+
+.EXAMPLE
+    .\Convert-RoamingProfileToFSLogix.ps1 -NoGui -ConfigPath D:\Migrazione\roaming.json -Simulate
 
 .NOTES
-    Versione: 1.1.0
+    Versione: 2.0.0
     Repo:     fispas/tools (rds/fslogix/roaming-to-fslogix)
+    Richiede: amministratore, Windows Server 2012 R2+ / Windows 10+, PowerShell 5.1, macchina nel dominio
 #>
+[CmdletBinding()]
+param(
+    [string]$ConfigPath,
+    [switch]$NoGui,
+    [string[]]$User,
+    [switch]$Simulate
+)
 
-# Requires -RunAsAdministrator
+$Tool = @{
+    Name        = 'RoamingToFSLogix'
+    Title       = 'Roaming -> FSLogix'
+    Version     = '2.0.0'
+    ConfirmKeys = @('SourcePath', 'DestinationPath', 'VolumeType', 'SizeMB', 'DiskType', 'FolderPattern', 'ExistingDisk')
+}
 
-# 1. Test dei privilegi di amministratore
+#region AVVIO (identico nei migratori FSLogix)
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+$isSta = [System.Threading.Thread]::CurrentThread.GetApartmentState() -eq 'STA'
+if (-not $NoGui -and (-not $isAdmin -or -not $isSta)) {
+    $argList = @('-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"")
+    if ($ConfigPath) { $argList += @('-ConfigPath', "`"$ConfigPath`"") }
+    try {
+        if ($isAdmin) { Start-Process -FilePath powershell.exe -ArgumentList $argList }
+        else { Start-Process -FilePath powershell.exe -ArgumentList $argList -Verb RunAs }
+    } catch {
+        Write-Error "Avvio come amministratore annullato o non riuscito: $($_.Exception.Message)"
+    }
+    return
+}
 if (-not $isAdmin) {
-    Write-Error "❌ Test fallito: lo script richiede i privilegi di amministratore."
-    exit
+    Write-Error 'Servono i privilegi di amministratore: aprire PowerShell come amministratore.'
+    exit 1
 }
 
-# Caricamento assembly per la GUI
-Add-Type -AssemblyName System.Windows.Forms
+$State = [hashtable]::Synchronized(@{
+    Queue      = New-Object 'System.Collections.Concurrent.ConcurrentQueue[object]'
+    Cancel     = $false
+    Headless   = [bool]$NoGui
+    LogDir     = $null
+    LogFile    = $null
+    ReportFile = $null
+})
+#endregion
 
-# Funzione per selezione cartella tramite GUI
-function Get-FolderViaGUI {
-    param([string]$Description)
-    $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
-    $dialog.Description = $Description
-    $dialog.ShowNewFolderButton = $true
-    
-    $form = New-Object System.Windows.Forms.Form
-    $form.TopMost = $true
-    
-    $result = $dialog.ShowDialog($form)
-    if ($result -eq [System.Windows.Forms.DialogResult]::OK) {
-        return $dialog.SelectedPath
+# Motore: definito una volta, usato dalla GUI, dal runspace di esecuzione e dalla modalita' -NoGui
+$Engine = {
+    #region MOTORE COMUNE (identico nei migratori FSLogix: una correzione qui va replicata negli altri)
+
+    function Write-ToolLog {
+        param(
+            [string]$Message,
+            [ValidateSet('INFO', 'OK', 'WARN', 'ERROR', 'STEP')][string]$Level = 'INFO'
+        )
+        $line = '{0} [{1}] {2}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Level.PadRight(5), $Message
+        if ($State.LogFile) {
+            try { Add-Content -LiteralPath $State.LogFile -Value $line -Encoding UTF8 -ErrorAction Stop } catch { }
+        }
+        if ($State.Headless) {
+            $color = switch ($Level) { 'OK' { 'Green' } 'WARN' { 'Yellow' } 'ERROR' { 'Red' } 'STEP' { 'Cyan' } default { 'Gray' } }
+            Write-Host $line -ForegroundColor $color
+        } elseif ($State.Queue) {
+            $State.Queue.Enqueue(@{ T = 'log'; L = $Level; M = $line })
+        }
     }
-    return $null
-}
 
-Write-Host "`n=== Conversione profili Roaming → FSLogix ===`n" -ForegroundColor Cyan
-
-# 2. Test Modulo AD
-try {
-    Import-Module ActiveDirectory -ErrorAction Stop
-} catch {
-    Write-Error "❌ Test fallito: Modulo ActiveDirectory non disponibile. Installalo prima di eseguire lo script."
-    exit
-}
-
-# Selezione GUI Sorgente
-Write-Host "In attesa di selezione della cartella sorgente (Roaming Profiles)..." -ForegroundColor Yellow
-$roamingroot = Get-FolderViaGUI -Description "1/2 - Seleziona la cartella SORGENTE dei profili Roaming (es. \\SRV01\Profili$)"
-
-# 3. Test selezione sorgente
-if (-not $roamingroot -or -not (Test-Path $roamingroot)) {
-    Write-Error "❌ Test fallito: Selezione sorgente annullata o non valida. Uscita."
-    exit
-}
-
-# Selezione GUI Destinazione
-Write-Host "In attesa di selezione della cartella di destinazione (FSLogix)..." -ForegroundColor Yellow
-$fslogixroot = Get-FolderViaGUI -Description "2/2 - Seleziona la cartella di DESTINAZIONE FSLogix (es. \\SRV01\FSLogix$)"
-
-# 4. Test selezione destinazione
-if (-not $fslogixroot) {
-    Write-Error "❌ Test fallito: Selezione destinazione annullata. Uscita."
-    exit
-}
-
-# 5. Test di coerenza percorsi
-if ($roamingroot -eq $fslogixroot) {
-    Write-Error "❌ Test fallito: La cartella di origine e destinazione non possono coincidere."
-    exit
-}
-
-if (-not (Test-Path $fslogixroot)) {
-    Write-Warning "Directory di destinazione $fslogixroot non trovata. Creazione in corso..."
-    New-Item -Path $fslogixroot -ItemType Directory | Out-Null
-    if (-not (Test-Path $fslogixroot)) {
-        Write-Error "❌ Test fallito: impossibile creare la directory $fslogixroot."
-        exit
+    function Send-ToolMessage([hashtable]$Message) {
+        if (-not $State.Headless -and $State.Queue) { $State.Queue.Enqueue($Message) }
     }
-}
 
-# Richiesta dimensione VHDX
-[int]$vhdxSizeMB = 30000
-$sizeInput = Read-Host "Inserisci la dimensione massima del VHDX in MB [Default: 30000]"
-if (-not [string]::IsNullOrWhiteSpace($sizeInput)) {
-    if ($sizeInput -match '^\d+$') {
-        $vhdxSizeMB = [int]$sizeInput
-    } else {
-        Write-Warning "Input non valido. Verrà utilizzata la dimensione di default (30000 MB)."
+    function Get-FSLogixValue([string]$Name) {
+        try { (Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\FSLogix\Profiles' -Name $Name -ErrorAction Stop).$Name } catch { $null }
     }
+
+    # Valori di default letti dalla configurazione FSLogix della macchina, se presente
+    function Get-DefaultNaming {
+        $folder = Get-FSLogixValue 'SIDDirNamePattern'
+        if (-not $folder) {
+            if ((Get-FSLogixValue 'FlipFlopProfileDirectoryName') -eq 1) { $folder = '%username%_%sid%' } else { $folder = '%sid%_%username%' }
+        }
+        $disk = Get-FSLogixValue 'VHDNamePattern'
+        if (-not $disk) { $disk = 'Profile_%username%' }
+        $disk = $disk -replace '\.vhdx?$', ''
+        $size = Get-FSLogixValue 'SizeInMBs'
+        if (-not $size) { $size = 30000 }
+        $vt = [string](Get-FSLogixValue 'VolumeType')
+        if ($vt -notin @('VHD', 'VHDX')) { $vt = 'VHDX' }
+        $dyn = Get-FSLogixValue 'IsDynamic'
+        $diskType = 'Dinamico'
+        if ($null -ne $dyn -and [int]$dyn -eq 0) { $diskType = 'Fisso' }
+        @{ FolderPattern = $folder; DiskNamePattern = $disk; SizeMB = [int]$size; VolumeType = $vt.ToUpper(); DiskType = $diskType }
+    }
+
+    function Get-DefaultFrxPath {
+        $dir = $null
+        try { $dir = (Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\FSLogix\Apps' -Name InstallPath -ErrorAction Stop).InstallPath } catch { }
+        if (-not $dir) { $dir = Join-Path $env:ProgramFiles 'FSLogix\Apps' }
+        Join-Path $dir 'frx.exe'
+    }
+
+    # SID -> account (DOMINIO\utente) senza modulo ActiveDirectory; nome visualizzato via ADSI se disponibile
+    function Resolve-SidAccount([string]$Sid) {
+        try {
+            $nt = (New-Object System.Security.Principal.SecurityIdentifier($Sid)).Translate([System.Security.Principal.NTAccount]).Value
+        } catch { return $null }
+        $parts = $nt.Split('\', 2)
+        $domain = ''; $sam = $nt
+        if ($parts.Count -eq 2) { $domain = $parts[0]; $sam = $parts[1] }
+        $display = ''
+        if ($domain -and $domain -ne $env:COMPUTERNAME) {
+            try {
+                $de = [adsi]"LDAP://<SID=$Sid>"
+                if ($de.Properties['displayName'].Count -gt 0) { $display = [string]$de.Properties['displayName'][0] }
+            } catch { }
+        }
+        [pscustomobject]@{ Account = $nt; Domain = $domain; Sam = $sam; DisplayName = $display }
+    }
+
+    function Resolve-AccountSid([string]$Domain, [string]$Sam) {
+        try {
+            if ($Domain) { $nt = New-Object System.Security.Principal.NTAccount($Domain, $Sam) }
+            else { $nt = New-Object System.Security.Principal.NTAccount($Sam) }
+            $nt.Translate([System.Security.Principal.SecurityIdentifier]).Value
+        } catch { $null }
+    }
+
+    function Test-ExcludedUser($Config, [string]$Sam) {
+        @($Config.ExcludeUsers) -contains $Sam
+    }
+
+    # Cartella e disco di destinazione secondo i pattern FSLogix (%sid%, %username%, %userdomain%)
+    function Get-ProfileTarget($Config, [string]$Sid, [string]$Sam, [string]$Domain, [string]$Extension) {
+        $expand = {
+            param([string]$Pattern)
+            $r = $Pattern -replace '%sid%', $Sid.Replace('$', '$$')
+            $r = $r -replace '%username%', $Sam.Replace('$', '$$')
+            $r = $r -replace '%userdomain%', ([string]$Domain).Replace('$', '$$')
+            foreach ($c in [System.IO.Path]::GetInvalidFileNameChars()) { $r = $r.Replace([string]$c, '_') }
+            $r
+        }
+        $folderName = & $expand $Config.FolderPattern
+        $diskName = (& $expand ($Config.DiskNamePattern -replace '\.vhdx?$', '')) + $Extension.ToLower()
+        $folder = Join-Path $Config.DestinationPath $folderName
+        [pscustomobject]@{ Folder = $folder; Disk = (Join-Path $folder $diskName) }
+    }
+
+    function Test-FileExclusive([string]$Path) {
+        try {
+            $fs = [System.IO.File]::Open($Path, 'Open', 'ReadWrite', 'None')
+            $fs.Close()
+            $true
+        } catch { $false }
+    }
+
+    function Get-FreeBytes([string]$Path) {
+        if (-not ('FispaTools.NativeDisk' -as [type])) {
+            Add-Type -Namespace FispaTools -Name NativeDisk -MemberDefinition @'
+[DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+public static extern bool GetDiskFreeSpaceEx(string lpDirectoryName, out ulong lpFreeBytesAvailable, out ulong lpTotalNumberOfBytes, out ulong lpTotalNumberOfFreeBytes);
+'@
+        }
+        $p = $Path
+        while ($p -and -not (Test-Path -LiteralPath $p)) { $p = Split-Path -Parent $p }
+        if (-not $p) { return $null }
+        if (-not $p.EndsWith('\')) { $p += '\' }
+        $free = [uint64]0; $total = [uint64]0; $totalFree = [uint64]0
+        if ([FispaTools.NativeDisk]::GetDiskFreeSpaceEx($p, [ref]$free, [ref]$total, [ref]$totalFree)) { return [double]$free }
+        $null
+    }
+
+    function Assert-FreeSpace([string]$Path, [double]$Bytes) {
+        if ($Bytes -le 0) { return }
+        $free = Get-FreeBytes $Path
+        if ($null -eq $free) { Write-ToolLog "Spazio libero non verificabile su $Path" 'WARN'; return }
+        if ($free -lt $Bytes) {
+            throw ('Spazio insufficiente su {0}: liberi {1:N1} GB, necessari {2:N1} GB' -f $Path, ($free / 1GB), ($Bytes / 1GB))
+        }
+    }
+
+    # Gestione di un disco FSLogix gia' presente. $true = procedere, $false = saltare
+    function Resolve-ExistingDisk($Config, [string]$DiskPath) {
+        if (-not (Test-Path -LiteralPath $DiskPath)) { return $true }
+        switch ($Config.ExistingDisk) {
+            'Salta' {
+                Write-ToolLog "Disco FSLogix gia' presente, utente saltato: $DiskPath" 'WARN'
+                return $false
+            }
+            default {
+                if (-not (Test-FileExclusive $DiskPath)) { throw "Il disco FSLogix esistente e' in uso: $DiskPath" }
+                if ($Config.DryRun) {
+                    Write-ToolLog "[Simulazione] disco esistente da gestire con '$($Config.ExistingDisk)': $DiskPath"
+                    return $true
+                }
+                if ($Config.ExistingDisk -eq 'Sovrascrivi') {
+                    Remove-Item -LiteralPath $DiskPath -Force -ErrorAction Stop
+                    Write-ToolLog "Disco esistente eliminato: $DiskPath" 'WARN'
+                } else {
+                    $bak = '{0}.bak-{1}' -f (Split-Path -Leaf $DiskPath), (Get-Date -Format 'yyyyMMdd-HHmmss')
+                    Rename-Item -LiteralPath $DiskPath -NewName $bak -ErrorAction Stop
+                    Write-ToolLog "Disco esistente rinominato in $bak" 'WARN'
+                }
+                return $true
+            }
+        }
+    }
+
+    # Owner e permessi: utente (per SID, indipendente da nome dominio e lingua), SYSTEM, Administrators
+    function Set-ProfileFolderAcl([string]$Path, [string]$Sid) {
+        $out = & icacls.exe $Path /setowner "*$Sid" /T /C /Q 2>&1
+        if ($LASTEXITCODE -ne 0) { throw "icacls /setowner su $Path non riuscito (exit $LASTEXITCODE): $(@($out) -join ' ')" }
+        $out = & icacls.exe $Path /grant "*${Sid}:(OI)(CI)F" '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' /C /Q 2>&1
+        if ($LASTEXITCODE -ne 0) { throw "icacls /grant su $Path non riuscito (exit $LASTEXITCODE): $(@($out) -join ' ')" }
+        Write-ToolLog "Permessi impostati su $Path"
+    }
+
+    function New-ProfileDataReg([string]$ProfileDir, [string]$Sid, [string]$Sam, $Config) {
+        $regDir = Join-Path $ProfileDir 'AppData\Local\FSLogix'
+        New-Item -ItemType Directory -Path $regDir -Force | Out-Null
+        $regFile = Join-Path $regDir 'ProfileData.reg'
+        if (Test-Path -LiteralPath $regFile) { Write-ToolLog "ProfileData.reg gia' presente, non modificato."; return }
+        $root = ([string]$Config.ProfileRoot).TrimEnd('\')
+        if (-not $root) { $root = 'C:\Users' }
+        $image = ($root + '\' + $Sam).Replace('\', '\\')
+        $lines = @(
+            'Windows Registry Editor Version 5.00'
+            ''
+            "[HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$Sid]"
+            "`"ProfileImagePath`"=`"$image`""
+            '"Flags"=dword:00000000'
+            '"State"=dword:00000000'
+            '"ProfileLoadTimeLow"=dword:00000000'
+            '"ProfileLoadTimeHigh"=dword:00000000'
+            '"RefCount"=dword:00000000'
+            '"RunLogonScriptSync"=dword:00000001'
+            ''
+        )
+        [System.IO.File]::WriteAllText($regFile, ($lines -join "`r`n"), [System.Text.Encoding]::Unicode)
+        Write-ToolLog "Creato ProfileData.reg (ProfileImagePath: $root\$Sam)"
+    }
+
+    # Monta un VHD/VHDX su una cartella temporanea: non dipende dalle lettere di unita' ne' dall'automount
+    function Mount-VDisk([string]$Path) {
+        $img = Get-DiskImage -ImagePath $Path -ErrorAction Stop
+        if ($img.Attached) { throw "Il disco e' gia' montato (sessione utente o esecuzione precedente): $Path" }
+        Mount-DiskImage -ImagePath $Path -NoDriveLetter -ErrorAction Stop | Out-Null
+        $disk = $null
+        for ($i = 0; $i -lt 30 -and -not $disk; $i++) {
+            $disk = Get-DiskImage -ImagePath $Path | Get-Disk -ErrorAction SilentlyContinue
+            if (-not $disk) { Start-Sleep -Seconds 1 }
+        }
+        if (-not $disk) {
+            Dismount-DiskImage -ImagePath $Path -ErrorAction SilentlyContinue | Out-Null
+            throw "Disco montato ma non visibile al sistema: $Path"
+        }
+        if ($disk.IsOffline) { Set-Disk -Number $disk.Number -IsOffline $false }
+        if ($disk.IsReadOnly) { Set-Disk -Number $disk.Number -IsReadOnly $false }
+        $part = Get-Partition -DiskNumber $disk.Number | Where-Object { $_.Type -notin @('Reserved', 'System', 'Recovery', 'Unknown') } |
+            Sort-Object Size -Descending | Select-Object -First 1
+        if (-not $part) {
+            Dismount-DiskImage -ImagePath $Path -ErrorAction SilentlyContinue | Out-Null
+            throw "Nessuna partizione dati trovata nel disco: $Path"
+        }
+        $folder = Join-Path $env:TEMP ('FispaTools_mnt_' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+        New-Item -ItemType Directory -Path $folder -Force | Out-Null
+        try {
+            Add-PartitionAccessPath -DiskNumber $disk.Number -PartitionNumber $part.PartitionNumber -AccessPath ($folder + '\') -ErrorAction Stop
+        } catch {
+            Dismount-DiskImage -ImagePath $Path -ErrorAction SilentlyContinue | Out-Null
+            try { [System.IO.Directory]::Delete($folder, $false) } catch { }
+            throw "Impossibile collegare la partizione a $folder : $($_.Exception.Message)"
+        }
+        Write-ToolLog "Disco montato in $folder"
+        [pscustomobject]@{ ImagePath = $Path; DiskNumber = $disk.Number; PartitionNumber = $part.PartitionNumber; Folder = $folder; Root = ($folder + '\') }
+    }
+
+    # Smonta e rimuove la cartella di montaggio. Restituisce $true se il disco non e' piu' montato
+    function Dismount-VDisk($Mount) {
+        if (-not $Mount) { return $true }
+        try {
+            Remove-PartitionAccessPath -DiskNumber $Mount.DiskNumber -PartitionNumber $Mount.PartitionNumber -AccessPath $Mount.Root -ErrorAction Stop
+        } catch { Write-ToolLog "Rimozione del punto di montaggio non riuscita: $($_.Exception.Message)" 'WARN' }
+        for ($i = 1; $i -le 3; $i++) {
+            try { Dismount-DiskImage -ImagePath $Mount.ImagePath -ErrorAction Stop | Out-Null; break }
+            catch { Write-ToolLog "Smontaggio tentativo $i non riuscito: $($_.Exception.Message)" 'WARN'; Start-Sleep -Seconds 3 }
+        }
+        $img = Get-DiskImage -ImagePath $Mount.ImagePath -ErrorAction SilentlyContinue
+        if ($img -and $img.Attached) {
+            Write-ToolLog "ATTENZIONE: il disco resta montato, smontarlo a mano: $($Mount.ImagePath)" 'ERROR'
+            return $false
+        }
+        try { [System.IO.Directory]::Delete($Mount.Folder, $false) } catch { }
+        Write-ToolLog 'Disco smontato.'
+        $true
+    }
+
+    function Dismount-IfAttached([string]$Path) {
+        try {
+            $img = Get-DiskImage -ImagePath $Path -ErrorAction Stop
+            if ($img.Attached) { Dismount-DiskImage -ImagePath $Path -ErrorAction Stop | Out-Null; Write-ToolLog "Disco smontato: $Path" 'WARN' }
+        } catch { }
+    }
+
+    function Remove-PartialDisk($Config, [string]$Path) {
+        if (-not $Config.CleanupOnError -or -not (Test-Path -LiteralPath $Path)) { return }
+        Dismount-IfAttached $Path
+        try { Remove-Item -LiteralPath $Path -Force -ErrorAction Stop; Write-ToolLog "Disco incompleto eliminato: $Path" 'WARN' }
+        catch { Write-ToolLog "Impossibile eliminare il disco incompleto $Path : $($_.Exception.Message)" 'ERROR' }
+    }
+
+    # Avvio processo con lettura asincrona di stdout/stderr (niente deadlock su output lunghi)
+    function Invoke-ProcessCapture([string]$FilePath, [string]$Arguments) {
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $FilePath
+        $psi.Arguments = $Arguments
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+        $p = [System.Diagnostics.Process]::Start($psi)
+        $out = $p.StandardOutput.ReadToEndAsync()
+        $err = $p.StandardError.ReadToEndAsync()
+        $p.WaitForExit()
+        [pscustomobject]@{ ExitCode = $p.ExitCode; StdOut = $out.Result; StdErr = $err.Result }
+    }
+
+    function Test-DiskValid([string]$Path) {
+        if (-not (Test-Path -LiteralPath $Path)) { throw "Disco non trovato a fine migrazione: $Path" }
+        $len = (Get-Item -LiteralPath $Path).Length
+        if ($len -lt 1MB) { throw "Il disco risulta vuoto o danneggiato ($len byte): $Path" }
+        [math]::Round($len / 1MB, 0)
+    }
+
+    function Invoke-ToolRun($Config, $Items) {
+        $list = @($Items)
+        $n = $list.Count
+        $results = New-Object System.Collections.Generic.List[object]
+        $mode = 'ESECUZIONE REALE'
+        if ($Config.DryRun) { $mode = 'SIMULAZIONE (nessuna modifica)' }
+        Write-ToolLog ('=== {0} {1} - {2} profili - {3}' -f $Tool.Title, $Tool.Version, $n, $mode) 'STEP'
+        foreach ($k in @($Config.Keys)) { Write-ToolLog ('  {0} = {1}' -f $k, (@($Config[$k]) -join '; ')) }
+        for ($i = 0; $i -lt $n; $i++) {
+            $item = $list[$i]
+            if ($State.Cancel) {
+                for ($j = $i; $j -lt $n; $j++) {
+                    $results.Add([pscustomobject]@{ Utente = $list[$j].Utente; SID = $list[$j].SID; Origine = $list[$j].Origine; Destinazione = ''; Esito = 'Annullato'; Messaggio = "Annullato dall'operatore"; DurataSec = 0; DimensioneMB = '' })
+                    Send-ToolMessage @{ T = 'row'; K = $list[$j].Key; E = 'Annullato' }
+                }
+                Write-ToolLog "Annullato dall'operatore: $($n - $i) profili non elaborati." 'WARN'
+                break
+            }
+            Send-ToolMessage @{ T = 'prog'; C = $i; N = $n; M = ('{0}/{1} {2}' -f ($i + 1), $n, $item.Utente) }
+            Write-ToolLog ('--- [{0}/{1}] {2} ({3})' -f ($i + 1), $n, $item.Utente, $item.SID) 'STEP'
+            $sw = [System.Diagnostics.Stopwatch]::StartNew()
+            $r = @{ Esito = 'Fallito'; Messaggio = ''; Destinazione = ''; DimensioneMB = '' }
+            try {
+                $o = Invoke-ToolItem -Config $Config -Item $item
+                foreach ($k in @($o.Keys)) { $r[$k] = $o[$k] }
+            } catch {
+                $r.Esito = 'Fallito'
+                $r.Messaggio = $_.Exception.Message
+                Write-ToolLog "Errore: $($r.Messaggio)" 'ERROR'
+            }
+            $sw.Stop()
+            $lvl = switch ($r.Esito) { 'OK' { 'OK' } 'Fallito' { 'ERROR' } 'Saltato' { 'WARN' } default { 'INFO' } }
+            $txt = $r.Esito
+            if ($r.Messaggio) { $txt += " - $($r.Messaggio)" }
+            Write-ToolLog ('{0}: {1} ({2:N0} s)' -f $item.Utente, $txt, $sw.Elapsed.TotalSeconds) $lvl
+            Send-ToolMessage @{ T = 'row'; K = $item.Key; E = $r.Esito }
+            $results.Add([pscustomobject]@{
+                Utente = $item.Utente; SID = $item.SID; Origine = $item.Origine; Destinazione = $r.Destinazione
+                Esito = $r.Esito; Messaggio = $r.Messaggio; DurataSec = [math]::Round($sw.Elapsed.TotalSeconds, 0); DimensioneMB = $r.DimensioneMB
+            })
+        }
+        $State.ReportFile = Join-Path $State.LogDir ('{0}_Report_{1}.csv' -f $Tool.Name, (Get-Date -Format 'yyyyMMdd_HHmmss'))
+        try { $results | Export-Csv -LiteralPath $State.ReportFile -NoTypeInformation -Delimiter ';' -Encoding UTF8 -ErrorAction Stop }
+        catch { Write-ToolLog "Report CSV non scritto: $($_.Exception.Message)" 'ERROR'; $State.ReportFile = $null }
+        $count = @{}
+        foreach ($e in @('OK', 'Simulato', 'Saltato', 'Fallito', 'Annullato')) { $count[$e] = @($results | Where-Object { $_.Esito -eq $e }).Count }
+        $summary = 'Totale {0} | OK {1} | Simulati {2} | Saltati {3} | Falliti {4} | Annullati {5}' -f $n, $count.OK, $count.Simulato, $count.Saltato, $count.Fallito, $count.Annullato
+        $lvl = 'OK'
+        if ($count.Fallito -gt 0) { $lvl = 'ERROR' } elseif ($count.Saltato -gt 0 -or $count.Annullato -gt 0) { $lvl = 'WARN' }
+        Write-ToolLog "=== Fine. $summary" $lvl
+        if ($State.ReportFile) { Write-ToolLog "Report: $($State.ReportFile)" }
+        Send-ToolMessage @{ T = 'done'; S = $summary; F = $count.Fallito; R = $State.ReportFile }
+        , $results.ToArray()
+    }
+    #endregion
+
+    #region SPECIFICO: Roaming -> FSLogix
+
+    function Get-ToolDefaultConfig {
+        $n = Get-DefaultNaming
+        [ordered]@{
+            SourcePath      = ''
+            DestinationPath = ''
+            Domain          = [string]$env:USERDOMAIN
+            SuffixRegex     = '\.V\d+$'
+            VolumeType      = $n.VolumeType
+            SizeMB          = $n.SizeMB
+            DiskType        = $n.DiskType
+            FolderPattern   = $n.FolderPattern
+            DiskNamePattern = $n.DiskNamePattern
+            ProfileRoot     = 'C:\Users'
+            ExistingDisk    = 'Salta'
+            SetProfileAcl   = $true
+            SetFolderAcl    = $true
+            RobocopyThreads = 8
+            RobocopyRetries = 2
+            ExcludeDirs     = @()
+            CleanupOnError  = $true
+            ExcludeUsers    = @()
+            LogDir          = (Join-Path $env:ProgramData ('FispaTools\' + $Tool.Name + '\Log'))
+            DryRun          = $true
+        }
+    }
+
+    function Get-ToolPrereqIssues($Config) {
+        $w = @()
+        if (-not (Get-Command Mount-DiskImage -ErrorAction SilentlyContinue)) { $w += 'Cmdlet Mount-DiskImage non disponibile (modulo Storage): il montaggio dei dischi non funzionera.' }
+        if (-not (Get-Command diskpart.exe -ErrorAction SilentlyContinue)) { $w += 'diskpart.exe non trovato.' }
+        if (-not (Get-Command robocopy.exe -ErrorAction SilentlyContinue)) { $w += 'robocopy.exe non trovato.' }
+        if (-not $env:USERDNSDOMAIN) { $w += 'Sessione non di dominio: la risoluzione degli utenti potrebbe non funzionare.' }
+        $w
+    }
+
+    function Test-ToolConfig($Config, [switch]$Scan) {
+        $e = @()
+        if (-not $Config.SourcePath) { $e += 'Indicare la cartella dei profili Roaming.' }
+        elseif (-not (Test-Path -LiteralPath $Config.SourcePath -PathType Container)) { $e += "Cartella di origine non trovata: $($Config.SourcePath)" }
+        try { [void][regex]::new([string]$Config.SuffixRegex) } catch { $e += "Espressione del suffisso non valida: $($Config.SuffixRegex)" }
+        if ($Scan) { return $e }
+        if (-not $Config.DestinationPath) { $e += 'Indicare la cartella FSLogix di destinazione.' }
+        elseif ($Config.SourcePath -and $Config.SourcePath.TrimEnd('\') -eq $Config.DestinationPath.TrimEnd('\')) { $e += 'Origine e destinazione coincidono.' }
+        if ($Config.FolderPattern -notmatch '%(sid|username)%') { $e += 'Il nome cartella deve contenere %sid% e/o %username%.' }
+        if ($Config.DiskNamePattern -notmatch '%(sid|username)%') { $e += 'Il nome disco deve contenere %username% e/o %sid%.' }
+        if ($Config.SizeMB -lt 1024) { $e += 'Dimensione del disco troppo piccola (minimo 1024 MB).' }
+        if (-not $Config.LogDir) { $e += 'Indicare la cartella dei log.' }
+        $e
+    }
+
+    function Get-ToolItems($Config) {
+        Write-ToolLog "Analisi di $($Config.SourcePath)" 'STEP'
+        $dirs = @(Get-ChildItem -LiteralPath $Config.SourcePath -Directory -Force -ErrorAction Stop | Sort-Object Name)
+        Write-ToolLog "Cartelle trovate: $($dirs.Count)"
+        $ext = '.' + ([string]$Config.VolumeType).ToLower()
+        foreach ($d in $dirs) {
+            $sam = $d.Name -replace $Config.SuffixRegex, ''
+            $sid = $null
+            if ($sam) { $sid = Resolve-AccountSid -Domain $Config.Domain -Sam $sam }
+            $acc = $null
+            if ($sid) { $acc = Resolve-SidAccount $sid }
+            $stato = 'Pronto'; $sel = $true
+            if (-not $sid) { $stato = 'Utente non trovato'; $sel = $false }
+            elseif (Test-ExcludedUser $Config $sam) { $stato = 'Escluso'; $sel = $false }
+            elseif (-not (Test-Path -LiteralPath (Join-Path $d.FullName 'NTUSER.DAT'))) { $stato = 'NTUSER.DAT assente' }
+            if ($sel -and $Config.DestinationPath) {
+                $t = Get-ProfileTarget -Config $Config -Sid $sid -Sam $sam -Domain $Config.Domain -Extension $ext
+                if (Test-Path -LiteralPath $t.Disk) { $stato = "Esiste gia' ($($Config.ExistingDisk))" }
+            }
+            [pscustomobject]@{
+                Key        = $d.FullName
+                Utente     = $sam
+                Nome       = $(if ($acc) { $acc.DisplayName } else { '' })
+                SID        = [string]$sid
+                Cartella   = $d.Name
+                Modificato = $d.LastWriteTime.ToString('yyyy-MM-dd HH:mm')
+                Stato      = $stato
+                Selectable = $sel
+                Origine    = $d.FullName
+            }
+        }
+    }
+
+    function New-ProfileVDisk([string]$Path, [int]$SizeMB, [bool]$Fixed) {
+        $type = 'expandable'
+        if ($Fixed) { $type = 'fixed' }
+        $dp = Join-Path $env:TEMP ('FispaTools_dp_{0}.txt' -f [guid]::NewGuid().ToString('N').Substring(0, 8))
+        @(
+            "create vdisk file=`"$Path`" maximum=$SizeMB type=$type"
+            "select vdisk file=`"$Path`""
+            'attach vdisk'
+            'create partition primary'
+            'format fs=ntfs quick label="Profile"'
+            'detach vdisk'
+        ) | Set-Content -LiteralPath $dp -Encoding ASCII
+        try {
+            $out = & diskpart.exe /s $dp 2>&1
+            $rc = $LASTEXITCODE
+        } finally { Remove-Item -LiteralPath $dp -Force -ErrorAction SilentlyContinue }
+        if ($rc -ne 0 -or -not (Test-Path -LiteralPath $Path)) {
+            Dismount-IfAttached $Path
+            throw ('Creazione del disco con diskpart non riuscita (exit {0}): {1}' -f $rc, ((@($out) | Where-Object { "$_".Trim() } | Select-Object -Last 6) -join ' | '))
+        }
+        Write-ToolLog ('Disco creato: {0} ({1} MB, {2})' -f $Path, $SizeMB, $type)
+    }
+
+    function Invoke-ToolItem($Config, $Item) {
+        $res = @{ Esito = 'Fallito'; Messaggio = ''; Destinazione = ''; DimensioneMB = '' }
+        $src = $Item.Origine
+        if (-not (Test-Path -LiteralPath $src)) { throw "Cartella profilo non piu' raggiungibile: $src" }
+        $ext = '.' + ([string]$Config.VolumeType).ToLower()
+        $t = Get-ProfileTarget -Config $Config -Sid $Item.SID -Sam $Item.Utente -Domain $Config.Domain -Extension $ext
+        $res.Destinazione = $t.Disk
+        Write-ToolLog "Origine:      $src"
+        Write-ToolLog "Destinazione: $($t.Disk)"
+        if (-not (Resolve-ExistingDisk -Config $Config -DiskPath $t.Disk)) {
+            $res.Esito = 'Saltato'; $res.Messaggio = "Disco FSLogix gia' presente"
+            return $res
+        }
+        $fixed = $Config.DiskType -eq 'Fisso'
+        if ($fixed) { Assert-FreeSpace -Path $Config.DestinationPath -Bytes ([double]$Config.SizeMB * 1MB) }
+        if ($Config.DryRun) {
+            Write-ToolLog ('[Simulazione] nuovo disco {0} MB {1}, copia robocopy in \Profile, permessi, ProfileData.reg' -f $Config.SizeMB, $Config.DiskType)
+            $res.Esito = 'Simulato'
+            return $res
+        }
+
+        $created = $false; $mount = $null; $ok = $false
+        try {
+            New-Item -ItemType Directory -Path $t.Folder -Force | Out-Null
+            $created = $true
+            New-ProfileVDisk -Path $t.Disk -SizeMB $Config.SizeMB -Fixed $fixed
+            $mount = Mount-VDisk $t.Disk
+            $profileDir = Join-Path $mount.Root 'Profile'
+            New-Item -ItemType Directory -Path $profileDir -Force | Out-Null
+            $rlog = Join-Path $State.LogDir ('robocopy_{0}.log' -f $Item.Utente)
+            $rArgs = @($src, $profileDir, '/E', '/ZB', '/COPY:DAT', '/DCOPY:DAT', '/XJ',
+                "/R:$($Config.RobocopyRetries)", '/W:2', "/MT:$($Config.RobocopyThreads)", '/NP', '/NFL', '/NDL', "/UNILOG+:$rlog")
+            if (@($Config.ExcludeDirs).Count) { $rArgs += '/XD'; $rArgs += @($Config.ExcludeDirs) }
+            Write-ToolLog 'Copia del profilo con robocopy in corso...'
+            & robocopy.exe @rArgs | Out-Null
+            $rc = $LASTEXITCODE
+            if ($rc -ge 8) { throw "Copia del profilo non riuscita (robocopy exit $rc, log: $rlog)" }
+            Write-ToolLog "Copia completata (robocopy exit $rc)."
+            if ($Config.SetProfileAcl) { Set-ProfileFolderAcl -Path $profileDir -Sid $Item.SID }
+            New-ProfileDataReg -ProfileDir $profileDir -Sid $Item.SID -Sam $Item.Utente -Config $Config
+            $ok = $true
+        } finally {
+            if ($mount -and -not (Dismount-VDisk $mount)) { $ok = $false }
+            if (-not $ok -and $created) { Remove-PartialDisk -Config $Config -Path $t.Disk }
+        }
+        if (-not $ok) { throw 'Il disco non e'' stato smontato correttamente.' }
+        if ($Config.SetFolderAcl) { Set-ProfileFolderAcl -Path $t.Folder -Sid $Item.SID }
+        $res.DimensioneMB = Test-DiskValid $t.Disk
+        $res.Esito = 'OK'
+        $res
+    }
+    #endregion
 }
 
-function ThisHHmmss { (Get-Date).ToString("HH:mm:ss") }
+#region SPECIFICO: campi della configurazione e colonne
+$ToolSchema = @(
+    @{ Type = 'Section'; Label = 'Percorsi' }
+    @{ Key = 'SourcePath'; Label = 'Cartella profili Roaming (origine)'; Type = 'Folder'; Help = 'Cartella che contiene i profili (es. \\SRV01\Profili$ con cartelle utente.V6). Non viene modificata.' }
+    @{ Key = 'DestinationPath'; Label = 'Cartella FSLogix (destinazione)'; Type = 'Folder'; Help = 'Radice dei contenitori FSLogix, locale o UNC (es. \\SRV01\FSLogix$).' }
+    @{ Type = 'Section'; Label = 'Utenti' }
+    @{ Key = 'Domain'; Label = 'Dominio (NetBIOS)'; Type = 'Text'; Help = "Dominio in cui cercare gli utenti. Predefinito: dominio dell'utente che esegue lo script." }
+    @{ Key = 'SuffixRegex'; Label = 'Suffisso da togliere al nome cartella'; Type = 'Text'; Help = 'Espressione regolare. Predefinito \.V\d+$ (mario.rossi.V6 -> mario.rossi).' }
+    @{ Key = 'ExcludeUsers'; Label = 'Utenti esclusi'; Type = 'List'; Help = 'SamAccountName separati da punto e virgola.' }
+    @{ Type = 'Section'; Label = 'Disco FSLogix' }
+    @{ Key = 'VolumeType'; Label = 'Formato'; Type = 'Choice'; Choices = @('VHDX', 'VHD'); Help = 'Deve corrispondere a VolumeType di FSLogix.' }
+    @{ Key = 'SizeMB'; Label = 'Dimensione massima (MB)'; Type = 'Int'; Min = 1024; Max = 2097152; Help = 'Come SizeInMBs di FSLogix. Precompilato dal registro FSLogix, altrimenti 30000.' }
+    @{ Key = 'DiskType'; Label = 'Tipo disco'; Type = 'Choice'; Choices = @('Dinamico', 'Fisso'); Help = "Dinamico cresce con i dati (come IsDynamic=1). Fisso occupa subito tutta la dimensione." }
+    @{ Key = 'FolderPattern'; Label = 'Nome cartella utente'; Type = 'Text'; Help = 'Come SIDDirNamePattern: %sid%_%username% (predefinito) oppure %username%_%sid% (FlipFlopProfileDirectoryName=1).' }
+    @{ Key = 'DiskNamePattern'; Label = 'Nome disco (senza estensione)'; Type = 'Text'; Help = 'Come VHDNamePattern (predefinito Profile_%username%).' }
+    @{ Key = 'ProfileRoot'; Label = 'Cartella profili sul session host'; Type = 'Text'; Help = 'Usata per ProfileImagePath in ProfileData.reg (predefinito C:\Users).' }
+    @{ Type = 'Section'; Label = 'Copia' }
+    @{ Key = 'RobocopyThreads'; Label = 'Thread robocopy (/MT)'; Type = 'Int'; Min = 1; Max = 64 }
+    @{ Key = 'RobocopyRetries'; Label = 'Tentativi su file bloccati (/R)'; Type = 'Int'; Min = 0; Max = 10 }
+    @{ Key = 'ExcludeDirs'; Label = 'Cartelle da non copiare'; Type = 'List'; Help = 'Nomi o percorsi passati a robocopy /XD, separati da punto e virgola.' }
+    @{ Type = 'Section'; Label = 'Comportamento' }
+    @{ Key = 'ExistingDisk'; Label = "Se il disco FSLogix esiste gia'"; Type = 'Choice'; Choices = @('Salta', 'Rinomina', 'Sovrascrivi'); Help = "Salta: l'utente non viene toccato. Rinomina: il disco esistente diventa <nome>.bak-<data>. Sovrascrivi: viene eliminato." }
+    @{ Key = 'SetProfileAcl'; Label = 'Imposta owner e permessi dentro il disco'; Type = 'Bool'; Help = "robocopy non copia le ACL (/COPY:DAT): l'utente diventa owner della cartella \Profile con controllo completo." }
+    @{ Key = 'SetFolderAcl'; Label = 'Imposta owner e permessi sulla cartella utente'; Type = 'Bool'; Help = 'Owner = utente; controllo completo a utente, SYSTEM e Administrators (per SID).' }
+    @{ Key = 'CleanupOnError'; Label = 'Elimina il disco creato se la migrazione fallisce'; Type = 'Bool'; Help = 'Evita che FSLogix agganci un disco incompleto.' }
+    @{ Key = 'LogDir'; Label = 'Cartella log e report'; Type = 'Folder'; Help = 'Contiene anche i log robocopy per utente.' }
+    @{ Key = 'DryRun'; Label = 'Simulazione (nessuna modifica)'; Type = 'Bool'; Help = 'Attiva di default: verifica tutto e registra le operazioni senza modificare nulla. Disattivarla per la migrazione reale.' }
+)
 
-# Contatori globali
-$successCount = 0
-$failCount    = 0
-$skipCount    = 0
-$delay        = 3
+$ToolColumns = @(
+    @{ Name = 'Utente'; Header = 'Utente'; Weight = 12 }
+    @{ Name = 'Nome'; Header = 'Nome'; Weight = 14 }
+    @{ Name = 'Cartella'; Header = 'Cartella'; Weight = 14 }
+    @{ Name = 'SID'; Header = 'SID'; Weight = 20 }
+    @{ Name = 'Modificato'; Header = 'Modificato'; Weight = 10 }
+    @{ Name = 'Stato'; Header = 'Stato'; Weight = 12 }
+)
+#endregion
 
-Write-Host "`n➜ Sorgente selezionata: $roamingroot" -ForegroundColor Green
-Write-Host "➜ Destinazione selezionata: $fslogixroot" -ForegroundColor Green
-Write-Host "➜ Dimensione VHDX target: ${vhdxSizeMB} MB`n" -ForegroundColor Green
+#region CONFIGURAZIONE E INTERFACCIA (identico nei migratori FSLogix)
+. $Engine
 
-# Elenca le cartelle Roaming (Test presenza directory)
-$directories = Get-ChildItem -Path $roamingroot -Directory -ErrorAction SilentlyContinue | Sort-Object Name
-if (-not $directories) {
-    Write-Error "❌ Test fallito: Nessuna cartella profilo trovata in $roamingroot"
-    exit
-}
+$ToolDataDir = Join-Path $env:ProgramData ('FispaTools\' + $Tool.Name)
+$DefaultConfigPath = Join-Path $ToolDataDir 'config.json'
 
-# Associa utenti (parsing nome cartella, rimuove suffissi come .V6, .V5)
-$results = @()
-foreach ($dir in $directories) {
-    $sam = $dir.Name -replace '\.V\d+$', ''
-    $user = Get-ADUser -Filter { SamAccountName -eq $sam } -Properties SamAccountName, Name, SID -ErrorAction SilentlyContinue
-    
-    if ($user) {
-        $results += [PSCustomObject]@{
-            SID        = $user.SID.Value
-            SAM        = $user.SamAccountName
-            Name       = $user.Name
-            SourcePath = $dir.FullName
+function ConvertTo-ConfigValue($Field, $Value) {
+    switch ($Field.Type) {
+        'Int' { try { return [int]$Value } catch { return $null } }
+        'Bool' { return [bool]$Value }
+        'List' {
+            if ($null -eq $Value) { return , @() }
+            $arr = @(@($Value) | ForEach-Object { "$_" -split '[;\r\n]+' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+            return , $arr
+        }
+        'Choice' {
+            if (@($Field.Choices) -contains [string]$Value) { return [string]$Value }
+            return $null
+        }
+        default {
+            if ($null -eq $Value) { return '' }
+            return [string]$Value
         }
     }
 }
 
-# 6. Test utenti trovati in AD
-if (-not $results) {
-    Write-Error "❌ Test fallito: Nessun utente AD trovato corrispondente alle cartelle Roaming analizzate."
-    exit
+function Read-ToolConfig([string]$Path) {
+    $cfg = Get-ToolDefaultConfig
+    if ($Path -and (Test-Path -LiteralPath $Path)) {
+        $loaded = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json
+        foreach ($f in $ToolSchema) {
+            if (-not $f.Key) { continue }
+            $p = $loaded.PSObject.Properties[$f.Key]
+            if ($p) {
+                $v = ConvertTo-ConfigValue $f $p.Value
+                if ($null -ne $v) { $cfg[$f.Key] = $v }
+            }
+        }
+    }
+    $cfg
 }
 
-# Selezione utenti tramite GridView (GUI)
-Write-Host "Apri la ViewGrid. Seleziona uno o più utenti da migrare e clicca OK." -ForegroundColor Yellow
-$targets = $results | Out-GridView -Title "Seleziona Utenti per Migrazione Roaming -> FSLogix" -PassThru
-
-if ($targets -is [PSCustomObject]) { $targets = @($targets) }
-
-if (-not $targets) {
-    Write-Host "`nNessun utente selezionato nella GUI. Uscita." -ForegroundColor Red
-    exit
+function Save-ToolConfig($Config, [string]$Path) {
+    $dir = Split-Path -Parent $Path
+    if ($dir -and -not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    $json = [pscustomobject]$Config | ConvertTo-Json -Depth 4
+    [System.IO.File]::WriteAllText($Path, $json, (New-Object System.Text.UTF8Encoding($true)))
 }
 
-$totalTargets = $targets.Count
+function Initialize-ToolLog($Config) {
+    $dir = [string]$Config.LogDir
+    if (-not $dir) { $dir = Join-Path $ToolDataDir 'Log' }
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    $State.LogDir = $dir
+    $State.LogFile = Join-Path $dir ('{0}_{1}.log' -f $Tool.Name, (Get-Date -Format 'yyyyMMdd_HHmmss'))
+}
 
-foreach ($target in $targets) {
-    $sourceProfilePath = $target.SourcePath
-    $sid = $target.SID
-    $sam = $target.SAM
-    $fslogixuserpath = Join-Path $fslogixroot "${sid}_${sam}"
+# ------------------------------------------------------------------ modalita' senza GUI
+if ($NoGui) {
+    $cfgPath = $DefaultConfigPath
+    if ($ConfigPath) {
+        if (-not (Test-Path -LiteralPath $ConfigPath)) { Write-Error "File di configurazione non trovato: $ConfigPath"; exit 1 }
+        $cfgPath = $ConfigPath
+    }
+    $Config = Read-ToolConfig $cfgPath
+    if ($Simulate) { $Config.DryRun = $true }
+    Initialize-ToolLog $Config
+    Write-ToolLog "Configurazione: $cfgPath"
+    foreach ($w in @(Get-ToolPrereqIssues $Config)) { Write-ToolLog $w 'WARN' }
+    $errs = @(Test-ToolConfig $Config)
+    if ($errs.Count) { foreach ($e in $errs) { Write-ToolLog $e 'ERROR' }; exit 1 }
+    $items = @(Get-ToolItems -Config $Config | Where-Object { $_.Selectable })
+    if ($User) { $items = @($items | Where-Object { $User -contains $_.Utente }) }
+    if (-not $items.Count) { Write-ToolLog 'Nessun profilo da elaborare.' 'WARN'; exit 0 }
+    $res = @(Invoke-ToolRun -Config $Config -Items $items)
+    if (@($res | Where-Object { $_.Esito -eq 'Fallito' }).Count) { exit 2 }
+    exit 0
+}
 
-    Write-Host "`n=======================================================" -ForegroundColor Cyan
-    Write-Host "$(ThisHHmmss) ➜ Avvio migrazione per: $($target.Name) ($sam)" -ForegroundColor Green
-    Write-Host "   Source Path: $sourceProfilePath" -ForegroundColor DarkCyan
-    Write-Host "   Target Path: $fslogixuserpath" -ForegroundColor DarkGreen
-    
-    # 7. Test validità origine in tempo reale
-    if (-not (Test-Path $sourceProfilePath)) {
-        Write-Warning "Test fallito: Cartella sorgente $sourceProfilePath non più raggiungibile."
-        $failCount++
+# ------------------------------------------------------------------ GUI
+Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+[System.Windows.Forms.Application]::EnableVisualStyles()
+
+function Show-Err([string]$m) { [void][System.Windows.Forms.MessageBox]::Show($m, $Tool.Title, 'OK', 'Error') }
+function Show-Info([string]$m) { [void][System.Windows.Forms.MessageBox]::Show($m, $Tool.Title, 'OK', 'Information') }
+function Confirm-UI([string]$m) { [System.Windows.Forms.MessageBox]::Show($m, $Tool.Title, 'YesNo', 'Question') -eq 'Yes' }
+
+$script:CurrentConfigPath = $DefaultConfigPath
+if ($ConfigPath) { $script:CurrentConfigPath = $ConfigPath }
+try { $Config = Read-ToolConfig $script:CurrentConfigPath }
+catch { Show-Err "Configurazione non leggibile, uso i valori predefiniti.`n$($_.Exception.Message)"; $Config = Get-ToolDefaultConfig }
+Initialize-ToolLog $Config
+
+$script:Running = $false
+$script:CloseWhenDone = $false
+$script:Handle = $null
+$script:PS = $null
+$script:Runspace = $null
+$script:LastDone = $null
+
+$form = New-Object System.Windows.Forms.Form
+$form.Text = '{0} {1}' -f $Tool.Title, $Tool.Version
+$form.Size = New-Object System.Drawing.Size(1150, 780)
+$form.MinimumSize = New-Object System.Drawing.Size(900, 600)
+$form.StartPosition = 'CenterScreen'
+$form.Font = New-Object System.Drawing.Font('Segoe UI', 9)
+
+$tabs = New-Object System.Windows.Forms.TabControl
+$tabs.Dock = 'Fill'
+$tabCfg = New-Object System.Windows.Forms.TabPage('Configurazione')
+$tabPro = New-Object System.Windows.Forms.TabPage('Profili')
+$tabLog = New-Object System.Windows.Forms.TabPage('Log')
+$tabs.TabPages.AddRange(@($tabCfg, $tabPro, $tabLog))
+
+# ---------------------------------------------------------- scheda Configurazione
+$tlp = New-Object System.Windows.Forms.TableLayoutPanel
+$tlp.Dock = 'Fill'
+$tlp.AutoScroll = $true
+$tlp.ColumnCount = 3
+$tlp.Padding = New-Object System.Windows.Forms.Padding(12, 8, 12, 8)
+[void]$tlp.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::AutoSize)))
+[void]$tlp.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 100)))
+[void]$tlp.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::AutoSize)))
+$tip = New-Object System.Windows.Forms.ToolTip
+$Ctl = @{}
+$row = 0
+foreach ($f in $ToolSchema) {
+    if ($f.Type -eq 'Section') {
+        $sec = New-Object System.Windows.Forms.Label
+        $sec.Text = $f.Label
+        $sec.AutoSize = $true
+        $sec.Font = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
+        $sec.Margin = New-Object System.Windows.Forms.Padding(0, 14, 0, 4)
+        $tlp.Controls.Add($sec, 0, $row)
+        $tlp.SetColumnSpan($sec, 3)
+        $row++
         continue
     }
-
-    if (-not (Test-Path $fslogixuserpath)) {
-        New-Item -Path $fslogixuserpath -ItemType Directory | Out-Null
-        Write-Host "Creata cartella contenitore: $fslogixuserpath" -ForegroundColor Green
-    } else {
-        Write-Host "Cartella contenitore esistente: $fslogixuserpath" -ForegroundColor Yellow
-    }
-
-    $newName = "Profile_$sam.vhdx"
-    $newVHDX = Join-Path $fslogixuserpath $newName
-
-    # 8. Test disco esistente e gestione sovrascrittura
-    if (Test-Path $newVHDX) {
-        Write-Warning "Trovato disco FSLogix già esistente per ($sam): $newName"
-        $choice = Read-Host "Vuoi sovrascrivere questo disco? (S/N)"
-        if ($choice -notmatch '^[SsYy]') {
-            Write-Host "Salto la migrazione per $sam" -ForegroundColor Yellow
-            $skipCount++
-            continue
-        } else {
-            Write-Host "Elimino il disco esistente e procedo..." -ForegroundColor Cyan
-            Remove-Item $newVHDX -Force -Recurse
-            # Test se l'eliminazione è riuscita
-            if (Test-Path $newVHDX) {
-                Write-Error "Test fallito: impossibile eliminare il disco esistente."
-                $failCount++
-                continue
-            }
+    $lbl = New-Object System.Windows.Forms.Label
+    $lbl.Text = $f.Label
+    $lbl.AutoSize = $true
+    $lbl.Anchor = 'Left'
+    $lbl.Margin = New-Object System.Windows.Forms.Padding(3, 6, 12, 3)
+    switch ($f.Type) {
+        'Int' {
+            $c = New-Object System.Windows.Forms.NumericUpDown
+            $c.Minimum = [decimal]$f.Min
+            $c.Maximum = [decimal]$f.Max
+            $c.Width = 140
+            $c.Anchor = 'Left'
+        }
+        'Choice' {
+            $c = New-Object System.Windows.Forms.ComboBox
+            $c.DropDownStyle = 'DropDownList'
+            [void]$c.Items.AddRange([object[]]@($f.Choices))
+            $c.Width = 240
+            $c.Anchor = 'Left'
+        }
+        'Bool' {
+            $c = New-Object System.Windows.Forms.CheckBox
+            $c.AutoSize = $true
+            $c.Anchor = 'Left'
+        }
+        default {
+            $c = New-Object System.Windows.Forms.TextBox
+            $c.Anchor = 'Left, Right'
         }
     }
-
-    try {
-        # 9. Test Creazione VHDX tramite DiskPart (Massima compatibilità)
-        Write-Host "$(ThisHHmmss) ➜ Creazione nuovo VHDX ($vhdxSizeMB MB)..." -ForegroundColor Yellow
-        $dpScriptPath = Join-Path $env:TEMP "diskpart_create_$sam.txt"
-        $dpScript = @"
-create vdisk file="$newVHDX" maximum=$vhdxSizeMB type=expandable
-attach vdisk
-create partition primary
-format fs=ntfs quick label="Profile"
-detach vdisk
-"@
-        $dpScript | Out-File $dpScriptPath -Encoding ascii
-        $dpResult = diskpart /s $dpScriptPath
-        Remove-Item $dpScriptPath -Force -ErrorAction SilentlyContinue
-
-        if (-not (Test-Path $newVHDX)) {
-            throw "Test fallito: La creazione del VHDX tramite DiskPart non è andata a buon fine."
-        }
-        Write-Host "VHDX creato e formattato con successo." -ForegroundColor Green
-
-        # 10. Test Mounting
-        Write-Host "$(ThisHHmmss) ➜ Mounting VHDX: $newVHDX" -ForegroundColor Green
-        $mountedVolume = Mount-DiskImage -ImagePath $newVHDX -Passthru
-        Start-Sleep -Seconds $delay
-
-        $mountletter = ($mountedVolume | Get-Disk | Get-Partition | Where-Object DriveLetter -ne 0 | Select-Object -First 1).DriveLetter
-        if (-not $mountletter) {
-            throw "Test fallito: Impossibile determinare la lettera di unità per il VHDX appena montato."
-        }
-        
-        $mountpath = "${mountletter}:\"
-        Write-Host "VHDX montato come: $mountpath" -ForegroundColor Cyan
-
-        $ProfileDir = Join-Path $mountpath 'Profile'
-        if (-not (Test-Path $ProfileDir)) {
-            New-Item $ProfileDir -ItemType Directory | Out-Null
-        }
-
-        # 11. Copia Dati (Robocopy) con contatore byte
-        Write-Host "$(ThisHHmmss) ➜ Copia dei dati Roaming in /Profile/ tramite Robocopy..." -ForegroundColor DarkYellow
-        $roboArgs = @(
-            $sourceProfilePath, 
-            $ProfileDir, 
-            "/E", "/ZB", "/COPY:DAT", "/DCOPY:DAT", 
-            "/R:2", "/W:2", "/MT:8", 
-            "/NFL", "/NDL", "/NP", "/NJH", "/NJS"
-        )
-        & robocopy $roboArgs | Out-Null
-        $roboExitCode = $LASTEXITCODE
-
-        if ($roboExitCode -ge 8) {
-            throw "Test fallito: Robocopy ha riscontrato un errore fatale (Exit Code: $roboExitCode)."
-        } else {
-            Write-Host "Test superato: Copia dati completata (Exit Code: $roboExitCode)." -ForegroundColor Cyan
-        }
-
-        # 12. Creazione Test Registry ProfileData.reg
-        $regpath = Join-Path $ProfileDir "AppData\Local\FSLogix"
-        if (-not (Test-Path $regpath)) {
-            New-Item -Path $regpath -ItemType Directory -Force | Out-Null
-        }
-
-        $regfile = Join-Path $regpath "ProfileData.reg"
-        if (-not (Test-Path $regfile)) {
-            $regtext = @"
-Windows Registry Editor Version 5.00
-
-[HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$sid]
-"ProfileImagePath"="C:\\Users\\$sam"
-"Flags"=dword:00000000
-"State"=dword:00000000
-"ProfileLoadTimeLow"=dword:00000000
-"ProfileLoadTimeHigh"=dword:00000000
-"RefCount"=dword:00000000
-"RunLogonScriptSync"=dword:00000001
-"@
-            $regtext | Out-File $regfile -Encoding utf8
-            if (-not (Test-Path $regfile)) {
-                throw "Test fallito: impossibile creare il file di registro ProfileData.reg"
-            }
-            Write-Host "Creato file ProfileData.reg (ProfileImagePath: C:\Users\$sam)" -ForegroundColor Green
-        }
-
-        # 13. Test Smontaggio
-        Write-Host "$(ThisHHmmss) ➜ Smontaggio VHDX..." -ForegroundColor Green
-        Dismount-DiskImage -ImagePath $newVHDX -Confirm:$false
-        Start-Sleep -Seconds $delay
-
-        # 14. Applicazione Permessi NTFS e Test
-        try {
-            $userFull = if ($env:USERDOMAIN) {"$env:USERDOMAIN\$sam"} else {$sam}
-            Write-Host "Impostazione proprietario e permessi NTFS per $fslogixuserpath..." -ForegroundColor DarkGray
-            
-            & icacls $fslogixuserpath /setowner "$userFull" /T /C /Q | Out-Null
-            & icacls $fslogixuserpath /grant "${userFull}:(OI)(CI)F" /T /C /Q | Out-Null
-            & icacls $fslogixuserpath /grant "SYSTEM:(OI)(CI)F" /T /C /Q | Out-Null
-            & icacls $fslogixuserpath /grant "Administrators:(OI)(CI)F" /T /C /Q | Out-Null
-            
-            Write-Host "Permessi NTFS impostati correttamente." -ForegroundColor Green
-        }
-        catch {
-            Write-Warning "⚠️ Impossibile impostare completamente i permessi NTFS: $_"
-        }
-
-        # 15. Validazione Finale
-        if (Test-Path $newVHDX) {
-            $finalSize = (Get-Item $newVHDX).Length
-            if ($finalSize -gt 1MB) {
-                Write-Host "`n✅ $(ThisHHmmss) - Migrazione completata per $sam" -ForegroundColor Green
-                $successCount++
+    $tlp.Controls.Add($lbl, 0, $row)
+    $tlp.Controls.Add($c, 1, $row)
+    if ($f.Type -in @('Folder', 'File')) {
+        $btn = New-Object System.Windows.Forms.Button
+        $btn.Text = 'Sfoglia...'
+        $btn.AutoSize = $true
+        $btn.Tag = @{ Box = $c; Type = $f.Type; Filter = $f.Filter }
+        $btn.Add_Click({
+            param($s, $e)
+            $t = $s.Tag
+            if ($t.Type -eq 'Folder') {
+                $d = New-Object System.Windows.Forms.FolderBrowserDialog
+                $d.ShowNewFolderButton = $true
+                if ($t.Box.Text -and (Test-Path -LiteralPath $t.Box.Text)) { $d.SelectedPath = $t.Box.Text }
+                if ($d.ShowDialog() -eq 'OK') { $t.Box.Text = $d.SelectedPath }
             } else {
-                throw "Test validazione fallito: Il VHDX generato risulta vuoto o corrotto."
+                $d = New-Object System.Windows.Forms.OpenFileDialog
+                if ($t.Filter) { $d.Filter = $t.Filter }
+                if ($d.ShowDialog() -eq 'OK') { $t.Box.Text = $d.FileName }
             }
-        } else {
-            throw "Test validazione fallito: Il VHDX non è presente nella destinazione post-smontaggio."
+        })
+        $tlp.Controls.Add($btn, 2, $row)
+    }
+    if ($f.Help) { $tip.SetToolTip($lbl, $f.Help); $tip.SetToolTip($c, $f.Help) }
+    $row++
+    if ($f.Help) {
+        $h = New-Object System.Windows.Forms.Label
+        $h.Text = $f.Help
+        $h.AutoSize = $true
+        $h.MaximumSize = New-Object System.Drawing.Size(760, 0)
+        $h.ForeColor = [System.Drawing.Color]::DimGray
+        $h.Margin = New-Object System.Windows.Forms.Padding(3, 0, 3, 6)
+        $tlp.Controls.Add($h, 1, $row)
+        $tlp.SetColumnSpan($h, 2)
+        $row++
+    }
+    $Ctl[$f.Key] = $c
+}
+$tlp.RowCount = $row + 1
+
+function Set-FormFromConfig($Cfg) {
+    foreach ($f in $ToolSchema) {
+        if (-not $f.Key) { continue }
+        $c = $Ctl[$f.Key]
+        $v = $Cfg[$f.Key]
+        switch ($f.Type) {
+            'Int' { $c.Value = [decimal][math]::Min([math]::Max([double]$v, [double]$f.Min), [double]$f.Max) }
+            'Choice' { $c.SelectedItem = [string]$v; if ($c.SelectedIndex -lt 0 -and $c.Items.Count) { $c.SelectedIndex = 0 } }
+            'Bool' { $c.Checked = [bool]$v }
+            'List' { $c.Text = (@($v) -join '; ') }
+            default { $c.Text = [string]$v }
         }
     }
-    catch {
-        Write-Error "❌ Errore critico durante la migrazione di ($sam): $_"
-        $failCount++
-    }
-    finally {
-        # Test post-smontaggio per cleanup garantito (Evita dischi bloccati)
-        $mounted = Get-DiskImage -ImagePath $newVHDX -ErrorAction SilentlyContinue
-        if ($mounted -and $mounted.Attached) {
-            Write-Warning "Tentativo di smontaggio finale nel blocco finally per rilascio disco..."
-            Dismount-DiskImage -ImagePath $newVHDX -Confirm:$false -ErrorAction SilentlyContinue
-            Start-Sleep -Seconds $delay
-        }
-    }
-    Write-Host "=======================================================" -ForegroundColor Cyan
 }
 
-Write-Host "`n🎉 Elaborazione completata. Statistiche finali:" -ForegroundColor Green
-Write-Host "  Utenti totali selezionati: $totalTargets"
-Write-Host "  Completati con successo: $successCount" -ForegroundColor Green
-Write-Host "  Saltati (esistenti o annullati): $skipCount" -ForegroundColor Yellow
-Write-Host "  Falliti / Errori: $failCount" -ForegroundColor Red
+function Get-ConfigFromForm {
+    $cfg = Get-ToolDefaultConfig
+    foreach ($f in $ToolSchema) {
+        if (-not $f.Key) { continue }
+        $c = $Ctl[$f.Key]
+        switch ($f.Type) {
+            'Int' { $cfg[$f.Key] = [int]$c.Value }
+            'Choice' { $cfg[$f.Key] = [string]$c.SelectedItem }
+            'Bool' { $cfg[$f.Key] = [bool]$c.Checked }
+            'List' { $cfg[$f.Key] = ConvertTo-ConfigValue $f $c.Text }
+            default { $cfg[$f.Key] = $c.Text.Trim() }
+        }
+    }
+    $cfg
+}
 
+$cfgBar = New-Object System.Windows.Forms.FlowLayoutPanel
+$cfgBar.Dock = 'Bottom'
+$cfgBar.AutoSize = $true
+$cfgBar.Padding = New-Object System.Windows.Forms.Padding(8)
+$btnSave = New-Object System.Windows.Forms.Button; $btnSave.Text = 'Salva'; $btnSave.AutoSize = $true
+$btnSaveAs = New-Object System.Windows.Forms.Button; $btnSaveAs.Text = 'Salva come...'; $btnSaveAs.AutoSize = $true
+$btnLoad = New-Object System.Windows.Forms.Button; $btnLoad.Text = 'Carica...'; $btnLoad.AutoSize = $true
+$btnDefaults = New-Object System.Windows.Forms.Button; $btnDefaults.Text = 'Valori predefiniti'; $btnDefaults.AutoSize = $true
+$lblCfg = New-Object System.Windows.Forms.Label; $lblCfg.AutoSize = $true; $lblCfg.Margin = New-Object System.Windows.Forms.Padding(12, 8, 3, 3)
+$cfgBar.Controls.AddRange(@($btnSave, $btnSaveAs, $btnLoad, $btnDefaults, $lblCfg))
+$tabCfg.Controls.Add($tlp)
+$tabCfg.Controls.Add($cfgBar)
+$tlp.BringToFront()
+
+function Update-CfgLabel { $lblCfg.Text = "File: $script:CurrentConfigPath" }
+
+$btnSave.Add_Click({
+    try { Save-ToolConfig (Get-ConfigFromForm) $script:CurrentConfigPath; Update-CfgLabel; Show-Info "Configurazione salvata in`n$script:CurrentConfigPath" }
+    catch { Show-Err "Salvataggio non riuscito: $($_.Exception.Message)" }
+})
+$btnSaveAs.Add_Click({
+    $d = New-Object System.Windows.Forms.SaveFileDialog
+    $d.Filter = 'Configurazione (*.json)|*.json'
+    $d.InitialDirectory = $ToolDataDir
+    $d.FileName = 'config.json'
+    if ($d.ShowDialog() -eq 'OK') {
+        try { Save-ToolConfig (Get-ConfigFromForm) $d.FileName; $script:CurrentConfigPath = $d.FileName; Update-CfgLabel }
+        catch { Show-Err "Salvataggio non riuscito: $($_.Exception.Message)" }
+    }
+})
+$btnLoad.Add_Click({
+    $d = New-Object System.Windows.Forms.OpenFileDialog
+    $d.Filter = 'Configurazione (*.json)|*.json'
+    if (Test-Path -LiteralPath $ToolDataDir) { $d.InitialDirectory = $ToolDataDir }
+    if ($d.ShowDialog() -eq 'OK') {
+        try { Set-FormFromConfig (Read-ToolConfig $d.FileName); $script:CurrentConfigPath = $d.FileName; Update-CfgLabel }
+        catch { Show-Err "Configurazione non valida: $($_.Exception.Message)" }
+    }
+})
+$btnDefaults.Add_Click({ if (Confirm-UI 'Ripristinare i valori predefiniti? Le modifiche non salvate vanno perse.') { Set-FormFromConfig (Get-ToolDefaultConfig) } })
+
+# ---------------------------------------------------------- scheda Profili
+$proBar = New-Object System.Windows.Forms.FlowLayoutPanel
+$proBar.Dock = 'Top'
+$proBar.AutoSize = $true
+$proBar.Padding = New-Object System.Windows.Forms.Padding(6)
+$btnScan = New-Object System.Windows.Forms.Button; $btnScan.Text = 'Analizza'; $btnScan.AutoSize = $true
+$btnAll = New-Object System.Windows.Forms.Button; $btnAll.Text = 'Seleziona tutti'; $btnAll.AutoSize = $true
+$btnNone = New-Object System.Windows.Forms.Button; $btnNone.Text = 'Nessuno'; $btnNone.AutoSize = $true
+$lblFilter = New-Object System.Windows.Forms.Label; $lblFilter.Text = 'Filtro:'; $lblFilter.AutoSize = $true; $lblFilter.Margin = New-Object System.Windows.Forms.Padding(16, 8, 3, 3)
+$txtFilter = New-Object System.Windows.Forms.TextBox; $txtFilter.Width = 220
+$lblCount = New-Object System.Windows.Forms.Label; $lblCount.AutoSize = $true; $lblCount.Margin = New-Object System.Windows.Forms.Padding(16, 8, 3, 3)
+$proBar.Controls.AddRange(@($btnScan, $btnAll, $btnNone, $lblFilter, $txtFilter, $lblCount))
+
+$grid = New-Object System.Windows.Forms.DataGridView
+$grid.Dock = 'Fill'
+$grid.AllowUserToAddRows = $false
+$grid.AllowUserToDeleteRows = $false
+$grid.AllowUserToResizeRows = $false
+$grid.RowHeadersVisible = $false
+$grid.SelectionMode = 'FullRowSelect'
+$grid.AutoSizeColumnsMode = 'Fill'
+$grid.BackgroundColor = [System.Drawing.Color]::White
+$colSel = New-Object System.Windows.Forms.DataGridViewCheckBoxColumn
+$colSel.Name = 'Sel'; $colSel.HeaderText = ''; $colSel.Width = 32; $colSel.AutoSizeMode = 'None'
+[void]$grid.Columns.Add($colSel)
+foreach ($col in $ToolColumns) {
+    $gc = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
+    $gc.Name = $col.Name; $gc.HeaderText = $col.Header; $gc.ReadOnly = $true; $gc.FillWeight = $col.Weight
+    [void]$grid.Columns.Add($gc)
+}
+$colEsito = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
+$colEsito.Name = 'Esito'; $colEsito.HeaderText = 'Esito'; $colEsito.ReadOnly = $true; $colEsito.FillWeight = 8
+[void]$grid.Columns.Add($colEsito)
+$tabPro.Controls.Add($grid)
+$tabPro.Controls.Add($proBar)
+$grid.BringToFront()
+
+function Update-Count {
+    $sel = 0; $ok = 0
+    foreach ($r in $grid.Rows) { if ($r.Tag.Selectable) { $ok++ }; if ($r.Cells['Sel'].Value -eq $true) { $sel++ } }
+    $lblCount.Text = 'Selezionati {0} / {1} migrabili ({2} trovati)' -f $sel, $ok, $grid.Rows.Count
+}
+
+function Show-Items($Items) {
+    $grid.Rows.Clear()
+    foreach ($it in @($Items)) {
+        $vals = New-Object System.Collections.Generic.List[object]
+        $vals.Add($false)
+        foreach ($col in $ToolColumns) { $vals.Add([string]$it.($col.Name)) }
+        $vals.Add('')
+        $idx = $grid.Rows.Add($vals.ToArray())
+        $r = $grid.Rows[$idx]
+        $r.Tag = $it
+        if (-not $it.Selectable) {
+            $r.Cells['Sel'].ReadOnly = $true
+            $r.DefaultCellStyle.ForeColor = [System.Drawing.Color]::Gray
+        } elseif ($it.Stato -ne 'Pronto') {
+            $r.DefaultCellStyle.ForeColor = [System.Drawing.Color]::DarkOrange
+        }
+    }
+    Update-Count
+}
+
+$grid.Add_CurrentCellDirtyStateChanged({ if ($grid.IsCurrentCellDirty) { [void]$grid.CommitEdit([System.Windows.Forms.DataGridViewDataErrorContexts]::Commit) } })
+$grid.Add_CellValueChanged({ Update-Count })
+$btnAll.Add_Click({
+    $grid.EndEdit() | Out-Null
+    foreach ($r in $grid.Rows) { if ($r.Visible -and $r.Tag.Selectable) { $r.Cells['Sel'].Value = $true } }
+    Update-Count
+})
+$btnNone.Add_Click({
+    $grid.EndEdit() | Out-Null
+    foreach ($r in $grid.Rows) { $r.Cells['Sel'].Value = $false }
+    Update-Count
+})
+$txtFilter.Add_TextChanged({
+    $q = $txtFilter.Text.Trim()
+    $grid.CurrentCell = $null
+    foreach ($r in $grid.Rows) {
+        if (-not $q) { $r.Visible = $true; continue }
+        $hit = $false
+        foreach ($cell in $r.Cells) { if ([string]$cell.Value -like "*$q*") { $hit = $true; break } }
+        $r.Visible = $hit
+    }
+})
+$btnScan.Add_Click({
+    $cfg = Get-ConfigFromForm
+    $errs = @(Test-ToolConfig $cfg -Scan)
+    if ($errs.Count) { Show-Err ($errs -join "`n"); return }
+    $form.UseWaitCursor = $true
+    [System.Windows.Forms.Application]::DoEvents()
+    try {
+        $items = @(Get-ToolItems -Config $cfg)
+        Show-Items $items
+        Write-ToolLog ('Analisi completata: {0} profili trovati, {1} migrabili.' -f $items.Count, @($items | Where-Object { $_.Selectable }).Count) 'OK'
+    } catch {
+        Write-ToolLog "Analisi non riuscita: $($_.Exception.Message)" 'ERROR'
+        Show-Err "Analisi non riuscita:`n$($_.Exception.Message)"
+    } finally { $form.UseWaitCursor = $false }
+})
+
+# ---------------------------------------------------------- scheda Log
+$logBox = New-Object System.Windows.Forms.RichTextBox
+$logBox.Dock = 'Fill'
+$logBox.ReadOnly = $true
+$logBox.WordWrap = $false
+$logBox.BackColor = [System.Drawing.Color]::White
+$logBox.Font = New-Object System.Drawing.Font('Consolas', 9)
+$tabLog.Controls.Add($logBox)
+
+function Add-LogLine([string]$Text, [string]$Level) {
+    $color = switch ($Level) {
+        'OK' { [System.Drawing.Color]::DarkGreen }
+        'WARN' { [System.Drawing.Color]::DarkOrange }
+        'ERROR' { [System.Drawing.Color]::Firebrick }
+        'STEP' { [System.Drawing.Color]::RoyalBlue }
+        default { [System.Drawing.Color]::Black }
+    }
+    $logBox.SelectionStart = $logBox.TextLength
+    $logBox.SelectionLength = 0
+    $logBox.SelectionColor = $color
+    $logBox.AppendText($Text + "`r`n")
+    $logBox.SelectionColor = $logBox.ForeColor
+    $logBox.ScrollToCaret()
+}
+
+# ---------------------------------------------------------- barra inferiore
+$bottom = New-Object System.Windows.Forms.Panel
+$bottom.Dock = 'Bottom'
+$bottom.Height = 74
+$prog = New-Object System.Windows.Forms.ProgressBar
+$prog.Dock = 'Top'
+$prog.Height = 16
+$runBar = New-Object System.Windows.Forms.FlowLayoutPanel
+$runBar.Dock = 'Fill'
+$runBar.Padding = New-Object System.Windows.Forms.Padding(6, 6, 6, 0)
+$btnStart = New-Object System.Windows.Forms.Button; $btnStart.Text = 'Avvia migrazione'; $btnStart.Width = 160; $btnStart.Height = 30
+$btnStart.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
+$btnCancel = New-Object System.Windows.Forms.Button; $btnCancel.Text = 'Annulla'; $btnCancel.Width = 100; $btnCancel.Height = 30; $btnCancel.Enabled = $false
+$btnOpenLog = New-Object System.Windows.Forms.Button; $btnOpenLog.Text = 'Cartella log e report'; $btnOpenLog.AutoSize = $true; $btnOpenLog.Height = 30
+$lblStatus = New-Object System.Windows.Forms.Label; $lblStatus.AutoSize = $true; $lblStatus.Margin = New-Object System.Windows.Forms.Padding(12, 9, 3, 3); $lblStatus.Text = 'Pronto.'
+$runBar.Controls.AddRange(@($btnStart, $btnCancel, $btnOpenLog, $lblStatus))
+$bottom.Controls.Add($runBar)
+$bottom.Controls.Add($prog)
+$runBar.BringToFront()
+
+$form.Controls.Add($tabs)
+$form.Controls.Add($bottom)
+$tabs.BringToFront()
+
+function Set-Running([bool]$On) {
+    $script:Running = $On
+    $btnStart.Enabled = -not $On
+    $btnScan.Enabled = -not $On
+    $btnCancel.Enabled = $On
+    $tlp.Enabled = -not $On
+    $cfgBar.Enabled = -not $On
+}
+
+function Receive-ToolMessage($Msg) {
+    switch ($Msg.T) {
+        'log' { Add-LogLine $Msg.M $Msg.L }
+        'prog' {
+            $prog.Maximum = [math]::Max(1, [int]$Msg.N)
+            $prog.Value = [math]::Min([int]$Msg.C, $prog.Maximum)
+            $lblStatus.Text = "In corso: $($Msg.M)"
+        }
+        'row' {
+            foreach ($r in $grid.Rows) {
+                if ($r.Tag.Key -eq $Msg.K) {
+                    $r.Cells['Esito'].Value = $Msg.E
+                    $r.Cells['Esito'].Style.ForeColor = switch ($Msg.E) {
+                        'OK' { [System.Drawing.Color]::DarkGreen }
+                        'Fallito' { [System.Drawing.Color]::Firebrick }
+                        'Saltato' { [System.Drawing.Color]::DarkOrange }
+                        'Simulato' { [System.Drawing.Color]::RoyalBlue }
+                        default { [System.Drawing.Color]::Gray }
+                    }
+                    break
+                }
+            }
+        }
+        'done' { $script:LastDone = $Msg }
+    }
+}
+
+function Receive-AllMessages {
+    $msg = $null
+    while ($State.Queue.TryDequeue([ref]$msg)) { Receive-ToolMessage $msg }
+}
+
+function Complete-Run {
+    $h = $script:Handle
+    $script:Handle = $null
+    try { [void]$script:PS.EndInvoke($h) } catch { Write-ToolLog "Errore interno: $($_.Exception.Message)" 'ERROR' }
+    foreach ($e in @($script:PS.Streams.Error)) { Write-ToolLog "Errore interno: $e" 'ERROR' }
+    try { $script:PS.Dispose(); $script:Runspace.Close(); $script:Runspace.Dispose() } catch { }
+    Receive-AllMessages
+    Set-Running $false
+    $prog.Value = $prog.Maximum
+    if ($script:LastDone) {
+        $lblStatus.Text = $script:LastDone.S
+        if (-not $script:CloseWhenDone) {
+            $txt = "Operazione terminata.`n`n$($script:LastDone.S)"
+            if ($script:LastDone.R) { $txt += "`n`nReport: $($script:LastDone.R)" }
+            if ($script:LastDone.F -gt 0) { Show-Err $txt } else { Show-Info $txt }
+        }
+    } else {
+        $lblStatus.Text = 'Terminato con errori: vedere il log.'
+    }
+    if ($script:CloseWhenDone) { $form.Close() }
+}
+
+$timer = New-Object System.Windows.Forms.Timer
+$timer.Interval = 200
+$timer.Add_Tick({
+    Receive-AllMessages
+    if ($script:Handle -and $script:Handle.IsCompleted) { Complete-Run }
+})
+
+$btnStart.Add_Click({
+    $cfg = Get-ConfigFromForm
+    $errs = @(Test-ToolConfig $cfg)
+    if ($errs.Count) { Show-Err ($errs -join "`n"); return }
+    $grid.EndEdit() | Out-Null
+    $items = @(foreach ($r in $grid.Rows) { if ($r.Cells['Sel'].Value -eq $true -and $r.Tag.Selectable) { $r.Tag } })
+    if (-not $items.Count) { Show-Info "Nessun profilo selezionato.`nScheda Profili: premere Analizza e spuntare i profili da migrare."; $tabs.SelectedTab = $tabPro; return }
+    $mode = 'ESECUZIONE REALE'
+    if ($cfg.DryRun) { $mode = 'SIMULAZIONE (nessuna modifica)' }
+    $msg = "Profili da elaborare: $($items.Count)`n"
+    foreach ($k in $Tool.ConfirmKeys) { $msg += "$k : $(@($cfg[$k]) -join '; ')`n" }
+    $msg += "`nModalita': $mode`n`nProcedere?"
+    if (-not (Confirm-UI $msg)) { return }
+    Initialize-ToolLog $cfg
+    $State.Cancel = $false
+    $script:LastDone = $null
+    foreach ($r in $grid.Rows) { $r.Cells['Esito'].Value = '' }
+    Set-Running $true
+    $tabs.SelectedTab = $tabLog
+    $script:Runspace = [runspacefactory]::CreateRunspace()
+    $script:Runspace.Open()
+    $script:Runspace.SessionStateProxy.SetVariable('Config', $cfg)
+    $script:Runspace.SessionStateProxy.SetVariable('Items', $items)
+    $script:Runspace.SessionStateProxy.SetVariable('State', $State)
+    $script:Runspace.SessionStateProxy.SetVariable('Tool', $Tool)
+    $script:PS = [powershell]::Create()
+    $script:PS.Runspace = $script:Runspace
+    [void]$script:PS.AddScript($Engine.ToString() + "`r`nInvoke-ToolRun -Config `$Config -Items `$Items | Out-Null")
+    $script:Handle = $script:PS.BeginInvoke()
+})
+
+$btnCancel.Add_Click({
+    $State.Cancel = $true
+    $btnCancel.Enabled = $false
+    Write-ToolLog "Annullamento richiesto: termino il profilo in corso e mi fermo." 'WARN'
+})
+
+$btnOpenLog.Add_Click({ if ($State.LogDir -and (Test-Path -LiteralPath $State.LogDir)) { Start-Process explorer.exe $State.LogDir } })
+
+$form.Add_FormClosing({
+    param($s, $e)
+    if ($script:Running) {
+        $e.Cancel = $true
+        if ($script:CloseWhenDone) { return }
+        if (Confirm-UI "Migrazione in corso.`nInterrompere dopo il profilo in corso e chiudere?`n(Non chiudere il processo a forza: un disco potrebbe restare montato.)") {
+            $State.Cancel = $true
+            $script:CloseWhenDone = $true
+            $btnCancel.Enabled = $false
+            Write-ToolLog 'Chiusura richiesta: attendo la fine del profilo in corso.' 'WARN'
+        }
+    }
+})
+
+$form.Add_Shown({
+    Set-FormFromConfig $Config
+    Update-CfgLabel
+    Update-Count
+    Write-ToolLog ('{0} {1} su {2} - log: {3}' -f $Tool.Title, $Tool.Version, $env:COMPUTERNAME, $State.LogFile) 'STEP'
+    foreach ($w in @(Get-ToolPrereqIssues $Config)) { Write-ToolLog $w 'WARN' }
+    $timer.Start()
+})
+
+[void]$form.ShowDialog()
+$timer.Stop()
+$form.Dispose()
+#endregion

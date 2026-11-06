@@ -1,53 +1,64 @@
 # upd-to-fslogix — User Profile Disk → FSLogix
 
-Questo script automatizza e mette in sicurezza la transizione dei profili utente dal vecchio formato UPD (User Profile Disk) alla struttura e ai requisiti nativi di FSLogix.
+Migra i dischi UPD di Remote Desktop (`UVHD-<SID>.vhdx` / `.vhd`) in contenitori FSLogix. Lavora su una **copia**: i dischi UPD originali non vengono mai modificati.
 
-## 📌 Prerequisiti
+## Requisiti
+- Windows Server 2012 R2+ / Windows 10+, PowerShell 5.1
+- Amministratore (la GUI chiede l'elevazione da sola)
+- Cmdlet `Mount-DiskImage` (modulo Storage, presente di serie), `robocopy`
+- Macchina nel dominio. **Non serve il modulo ActiveDirectory**: gli utenti si risolvono dal SID
 
-Prima di eseguire lo script, assicurarsi che la macchina di esecuzione soddisfi i seguenti requisiti:
+## Uso
 
-* **Privilegi Amministrativi**: Lo script eseguirà un test iniziale e si bloccherà se non viene eseguito come Amministratore (necessario per il mount dei dischi e le modifiche NTFS).
-* **Modulo ActiveDirectory**: Necessario per risolvere i SID dei file VHDX nei rispettivi `SamAccountName`.
-* **PowerShell 5.1+**: Richiesto per l'integrazione con `System.Windows.Forms` (per le finestre di dialogo GUI) e `Out-GridView`.
+```powershell
+.\Convert-UPDToFSLogix.ps1
+```
 
-## 🚀 Come si usa
+1. **Configurazione**: percorsi, formato FSLogix, comportamento. I campi hanno una descrizione sotto. *Salva* scrive in `%ProgramData%\FispaTools\UPDToFSLogix\config.json`; *Salva come* / *Carica* gestiscono più configurazioni (una per ambiente).
+2. **Profili** → *Analizza*: elenca i dischi con utente, nome, dimensione, data e stato. Non selezionabili (in grigio): SID non risolto, escluso, disco in uso. In arancione: disco FSLogix già presente.
+3. Spunta i profili (filtro e *Seleziona tutti* disponibili) → **Avvia migrazione**. Viene chiesta una conferma con il riepilogo.
+4. **Log**: avanzamento in tempo reale. *Annulla* completa il profilo in corso e si ferma.
 
-1. Avviare una console PowerShell come Amministratore.
-2. Eseguire lo script: `.\Convert-UPDToFSLogix.ps1`
-3. **Selezione Origine**: Si aprirà una finestra di dialogo. Selezionare la cartella che contiene i file UPD originali (i file con prefisso `UVHD-S...`).
-4. **Selezione Destinazione**: Si aprirà una seconda finestra di dialogo. Selezionare la cartella di root dove verranno creati i profili FSLogix.
-5. **Selezione Utenti**: Apparirà una griglia visiva (GridView) con l'elenco di tutti gli utenti trovati. È possibile usare i filtri in alto, selezionare uno, più o tutti gli utenti e cliccare su **OK** in basso a destra.
-6. Lo script inizierà l'elaborazione mostrando a schermo l'avanzamento con i relativi log temporali.
+La **simulazione è attiva di default**: verifica tutto e scrive nel log le operazioni senza toccare nulla. Per la migrazione reale va disattivata.
 
-## ⚙️ Come funziona sotto il cofano
+### Senza GUI
 
-Per ogni utente selezionato, lo script esegue un flusso di lavoro rigoroso, protetto da blocchi `try/catch` e validazioni continue:
+```powershell
+.\Convert-UPDToFSLogix.ps1 -NoGui                                   # config salvata, tutti i profili migrabili
+.\Convert-UPDToFSLogix.ps1 -NoGui -ConfigPath D:\Mig\upd.json -User mario.rossi,anna.bianchi
+.\Convert-UPDToFSLogix.ps1 -NoGui -Simulate                         # forza la simulazione
+```
+Codici di uscita: `0` ok, `1` configurazione non valida, `2` almeno un profilo fallito.
 
-1. **Test Pre-Esecuzione**: Verifica che il VHDX di origine esista ancora e controlla se esiste già un disco FSLogix in destinazione (chiedendo eventualmente di sovrascriverlo o saltarlo).
-2. **Mount del Disco**: Monta il VHDX originale e ne individua la lettera di unità testando le partizioni attive (ignora le partizioni di sistema nascoste).
-3. **Ristrutturazione Interna**:
-* Crea una cartella `Profile` all'interno del disco montato.
-* Sposta tutto il contenuto del profilo nella nuova cartella `Profile`, escludendo tramite un'espressione regolare le cartelle di sistema e il Cestino.
+## Parametri della configurazione
 
+| Campo | Default | Note |
+|---|---|---|
+| Cartella UPD (origine) | — | Cartella con i file `UVHD-S-*.vhdx/.vhd` |
+| Cartella FSLogix (destinazione) | — | Locale o UNC |
+| Nome cartella utente | dal registro FSLogix, altrimenti `%sid%_%username%` | Come `SIDDirNamePattern`; `%username%_%sid%` = FlipFlop |
+| Nome disco | dal registro FSLogix, altrimenti `Profile_%username%` | Come `VHDNamePattern`; l'estensione resta quella del disco UPD |
+| Cartella profili sul session host | `C:\Users` | Per `ProfileImagePath` in `ProfileData.reg` |
+| Se il disco FSLogix esiste già | Salta | Salta / Rinomina in `.bak-<data>` / Sovrascrivi |
+| Owner e permessi sulla cartella | sì | Per SID: utente, SYSTEM, Administrators |
+| Elimina il disco se fallisce | sì | Niente dischi incompleti in produzione |
+| Utenti esclusi | — | SamAccountName separati da `;` |
+| Cartella log e report | `%ProgramData%\FispaTools\UPDToFSLogix\Log` | Log, report CSV, log robocopy |
+| Simulazione | sì | |
 
-4. **Iniezione File di Registro**: Crea la cartella `AppData\Local\FSLogix` all'interno del disco e inietta il file `ProfileData.reg` necessario al motore FSLogix per il corretto aggancio del profilo su `C:\Users\<NomeUtente>`.
-5. **Dismount Sicuro**: Smonta il disco, assicurandosi di rilasciare i lock sul file system.
-6. **Copia e Rinomina**: Invece di spostare il file, lo **copia** nella directory di destinazione FSLogix (all'interno della cartella `<SID>_<SAM>`) e lo rinomina in `Profile_<SAM>.vhdx`. Il VHDX UPD originale rimane intatto e preservato.
-7. **Applicazione Permessi NTFS**: Esegue il reset e l'impostazione dei permessi tramite `icacls`, garantendo l'accesso completo al proprietario del profilo (utente del dominio), a `SYSTEM` e al gruppo `Administrators`.
+## Cosa fa per ogni utente
+1. Verifica che il disco UPD esista e non sia in uso, gestisce un eventuale disco FSLogix già presente, controlla lo spazio libero.
+2. Copia il disco nella cartella dell'utente con `robocopy /J` e lo rinomina.
+3. Monta la copia su una cartella temporanea (nessuna lettera di unità), sposta il contenuto in `\Profile` escludendo `Uvhd-Binding`, cestino e `System Volume Information`. Ogni errore di spostamento blocca la migrazione dell'utente.
+4. Crea `\Profile\AppData\Local\FSLogix\ProfileData.reg` (UTF-16, come i file `.reg` di Windows).
+5. Smonta (fino a 3 tentativi), imposta owner e permessi, verifica il disco finale.
+6. Se qualcosa fallisce: smonta comunque e, se configurato, elimina la copia incompleta.
 
-## 🛡️ Test di Validazione e Contatori
-
-Lo script è progettato per non bloccarsi o corrompere i dati in caso di imprevisti, garantendo tolleranza agli errori per migrazioni massive:
-
-* **Test di coerenza percorsi**: Impedisce di selezionare la stessa cartella per origine e destinazione.
-* **Test sui file system**: Verifica la presenza dei file originari prima del mount, il successo del dismount, l'effettiva creazione dei file .reg e il successo delle operazioni di copia e rinomina.
-* **Cleanup garantito**: Un blocco `finally` assicura che, anche in caso di crash fatale su un singolo profilo, venga effettuato un tentativo forzato di smontaggio del VHDX per non lasciare dischi appesi nel sistema.
-* **Statistiche Finali**: Al termine dell'esecuzione, lo script stampa un report basato su contatori incrementali costantemente aggiornati:
-* Totale utenti selezionati.
-* Dischi elaborati con **Successo**.
-* Dischi **Saltati** (scelta dell'utente o file esistenti).
-* Migrazioni **Fallite** (con errori dettagliati su quale test specifico non è stato superato).
+## Output
+- Log: `<cartella log>\UPDToFSLogix_<data>.log`
+- Report: `<cartella log>\UPDToFSLogix_Report_<data>.csv` (separatore `;`, si apre direttamente in Excel)
 
 ## Changelog
-- **1.0.1** — importato in `fispas/tools` dal repo `fispas/fslogix-UPD-profile-migrator`; script rinominato secondo convenzione
-- **1.1.0** — rimossi riferimenti aziendali dall'header, esempi di percorso neutri (`\\SRV01\...`)
+- **2.0.0** — riscritto: GUI a schede con configurazione salvabile e più profili di configurazione, analisi con stato per utente, simulazione di default, esecuzione in background con annullamento pulito, modalità `-NoGui`. Si lavora sulla copia (la 1.x spostava il contenuto dentro il disco UPD originale prima di copiarlo). Nessuna domanda da console: gestione del disco esistente configurabile. Niente modulo ActiveDirectory. Montaggio senza lettera di unità. Permessi per SID con controllo dei codici di uscita. Errori di spostamento non più ignorati. Pulizia dei dischi incompleti. Supporto `.vhd`. Report CSV.
+- **1.1.0** — rimossi riferimenti aziendali dall'header, esempi di percorso neutri.
+- **1.0.1** — importato in `fispas/tools` dal repo `fispas/fslogix-UPD-profile-migrator`.

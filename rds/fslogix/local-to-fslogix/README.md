@@ -1,51 +1,56 @@
 # local-to-fslogix — Profili locali → FSLogix
 
-Tool con interfaccia grafica (GUI) scritto in PowerShell per automatizzare, gestire e monitorare la migrazione massiva di profili utente locali (Windows) verso container FSLogix (VHDX).
+Migra i profili locali di Windows in contenitori FSLogix con `frx.exe copy-profile`. Va eseguito sulla macchina che ospita i profili (session host o PC), con FSLogix installato.
 
-## 🚀 Funzionalità Principali
+## Requisiti
+- PowerShell 5.1, amministratore (la GUI chiede l'elevazione da sola)
+- FSLogix Apps installato (`frx.exe`, percorso letto dal registro)
 
-* **Interfaccia Grafica (GUI):** Semplifica la selezione dei percorsi e degli utenti da migrare tramite moduli Windows Forms.
-* **Esecuzione Asincrona (Runspaces):** L'operazione di copia massiva avviene in un thread separato. L'interfaccia grafica rimane reattiva e si aggiorna in tempo reale senza fastidiosi blocchi (freeze).
-* **Validazione Pre-Migrazione (Pre-Checks):**
-* Risoluzione automatica dell'identificatore di sicurezza (SID) dell'utente.
-* Verifica dell'integrità del profilo nel registro di sistema (`HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList`), ignorando profili corrotti o temporanei (`.bak`).
-* Controllo di accesso su `ntuser.dat` per assicurarsi che il profilo non sia attualmente in uso (utente loggato).
+## Uso
 
+```powershell
+.\Convert-LocalProfileToFSLogix.ps1
+```
 
-* **Assegnazione Automatica Permessi (ACL):** Utilizza `icacls` per creare le cartelle di destinazione (`SID_Username`) e assegnare automaticamente la proprietà (Owner) e i permessi corretti all'utente di dominio.
-* **Test Post-Migrazione:** Verifica la corretta creazione fisica del file `.vhdx` nel percorso di destinazione e controlla che la sua dimensione sia maggiore di 0 byte per validare il successo dell'operazione.
-* **Logging Dettagliato:** Mostra l'output in tempo reale direttamente nella GUI e salva una copia permanente in un file testuale con timestamp (es. `%TEMP%\FSLogixMigration\FSLogix_Migration_Log_...`).
+1. **Configurazione**: destinazione, formato e dimensione del disco, opzioni. *Salva* scrive in `%ProgramData%\FispaTools\LocalToFSLogix\config.json`; *Salva come* / *Carica* per più ambienti.
+2. **Profili** → *Analizza*: i profili vengono letti dal registro (`ProfileList`), non dai nomi delle cartelle, con utente, nome, dominio, cartella, ultimo uso e stato. Non selezionabili: account non risolto, account locale (salvo opzione), escluso, profilo temporaneo/corrotto (`.bak`), cartella assente, profilo caricato, `NTUSER.DAT` in uso.
+3. Spunta i profili → **Avvia migrazione** → conferma con riepilogo.
+4. **Log** in tempo reale, compreso l'output di `frx.exe`; *Annulla* completa il profilo in corso e si ferma.
 
-## 🛠️ Prerequisiti
+La **simulazione è attiva di default**: mostra il comando `frx.exe` che verrebbe eseguito per ogni utente.
 
-1. **Privilegi:** Lo script *deve* essere eseguito come Amministratore locale.
-2. **FSLogix Apps:** FSLogix deve essere fisicamente installato sul server/macchina da cui si lancia lo script. Il tool si appoggia all'eseguibile ufficiale `frx.exe` (percorso letto dal registro `HKLM:\SOFTWARE\FSLogix\Apps`, fallback `%ProgramFiles%\FSLogix\Apps`).
-3. **PowerShell:** Versione 5.1 o superiore. Nessun modulo aggiuntivo di terze parti richiesto.
+### Senza GUI
 
-## ⚙️ Come si utilizza
+```powershell
+.\Convert-LocalProfileToFSLogix.ps1 -NoGui
+.\Convert-LocalProfileToFSLogix.ps1 -NoGui -User mario.rossi,anna.bianchi -Simulate
+```
+Codici di uscita: `0` ok, `1` configurazione non valida, `2` almeno un profilo fallito.
 
-1. Aprire una console PowerShell come Amministratore ed eseguire lo script `Convert-LocalProfileToFSLogix.ps1`.
-2. **Cartella Profili Locali:** Selezionare o digitare il percorso di origine contenente i profili locali (di default `C:\Users`).
-3. **Destinazione FSLogix:** Selezionare o digitare la directory di rete o il disco locale in cui verranno salvati i dischi VHDX (campo vuoto di default, es. `D:\FSLogix` oppure `\\SRV01\FSLogix$`).
-4. **Dimensione VHDX (MB):** Impostare il limite massimo del disco virtuale in megabyte (es. 30000 per ~30GB).
-5. Cliccare su **Carica Profili**. La lista si popolerà con i nomi utente trovati nella cartella sorgente, ignorando in automatico cartelle di sistema come `Public`, `Default`, o `Administrator`.
-6. Spuntare le caselle accanto agli utenti che si desidera migrare.
-7. Cliccare su **AVVIA MIGRAZIONE**.
-8. Monitorare l'avanzamento tramite la barra di stato progressiva e il box di log in tempo reale.
+## Parametri della configurazione
 
-## 🔍 Come funziona "sotto il cofano"
+| Campo | Default | Note |
+|---|---|---|
+| Cartella FSLogix | — | Locale o UNC |
+| Percorso frx.exe | da `HKLM\SOFTWARE\FSLogix\Apps`, altrimenti `%ProgramFiles%\FSLogix\Apps` | |
+| Formato | dal registro FSLogix, altrimenti VHDX | VHDX / VHD |
+| Dimensione massima (MB) | dal registro FSLogix, altrimenti 30000 | `-size-mbs` |
+| Tipo disco | dal registro FSLogix, altrimenti Dinamico | `-dynamic 1/0` |
+| Nome cartella utente / Nome disco | come FSLogix | `%sid%_%username%`, `Profile_%username%` |
+| Includi account locali | no | |
+| Utenti esclusi | — | Separati da `;` |
+| Se il disco esiste già | Salta | Salta / Rinomina / Sovrascrivi |
+| Permessi sulla cartella utente | sì | Per SID: utente, SYSTEM, Administrators |
+| Elimina il disco se fallisce | sì | |
+| Abilita percorsi lunghi | no | Imposta `LongPathsEnabled=1`: la 1.x lo faceva sempre, ora solo se richiesto |
+| Cartella log e report | `%ProgramData%\FispaTools\LocalToFSLogix\Log` | |
+| Simulazione | sì | |
 
-Quando si avvia la migrazione per un utente, lo script esegue questa sequenza logica:
-
-1. Ricava il dominio (o hostname) e il SID associato all'utente selezionato.
-2. Esegue i controlli di sicurezza (pre-checks) assicurandosi che l'utente esista nel registro e non abbia la sessione aperta sul server.
-3. Se la cartella di destinazione per l'utente non esiste, la crea nel formato standard FSLogix (`SID_NomeUtente`).
-4. Configura i permessi NTFS usando `icacls`, garantendo l'accesso `(OI)(CI)F` in base alle best practice di Microsoft per i container FSLogix.
-5. Invoca il comando ufficiale di copia:
-`frx.exe copy-profile -filename "Percorso.vhdx" -sid <SID> -size-mbs <SIZE> -dynamic 1 -verbose`
-6. Terminata l'esecuzione del processo figlio, esegue un test logico sul file generato.
-7. Scrive l'esito dell'operazione, la dimensione creata o eventuali codici di errore (Exit Code) di `frx.exe` nel file di log globale.
+## Output
+- Log: `<cartella log>\LocalToFSLogix_<data>.log`
+- Report: `<cartella log>\LocalToFSLogix_Report_<data>.csv`
 
 ## Changelog
-- **1.0.1** — importato in `fispas/tools` dal repo `fispas/fslogix-local-profile-migrator`; script rinominato secondo convenzione
-- **1.1.0** — aggiunto header di help; log in `%TEMP%\FSLogixMigration` invece di `C:\temp`; percorso FSLogix letto dal registro; destinazione senza default fisso, con controllo campo vuoto
+- **2.0.0** — riscritto: GUI a schede con configurazione salvabile, simulazione di default, annullamento pulito, modalità `-NoGui`, report CSV. Profili letti da `ProfileList` invece che dai nomi delle cartelle, con controllo di profilo caricato e `NTUSER.DAT` in uso. Lettura asincrona dell'output di `frx.exe` (la 1.x poteva bloccarsi su output lunghi). Formato, tipo disco e nomi FSLogix configurabili. Permessi per SID con controllo dei codici di uscita, applicati anche a cartelle esistenti. Gestione del disco esistente. Pulizia dei dischi incompleti. `LongPathsEnabled` solo su richiesta.
+- **1.1.0** — header di help, log in `%TEMP%`, percorso FSLogix dal registro, destinazione senza default fisso.
+- **1.0.1** — importato in `fispas/tools` dal repo `fispas/fslogix-local-profile-migrator`.
