@@ -34,4 +34,4 @@ Regole complete in [CLAUDE.md](CLAUDE.md). Per un nuovo tool si parte da [`_temp
 | Progetto | Descrizione | Stato |
 |---|---|---|
 | [ad-hardening](active-directory/ad-hardening/) | Fotografia della sicurezza e salute di AD (stile PingCastle / Purple Knight), hardening guidato con rollback (gMSA, LAPS, Protected Users, audit policy, Tier model), documentazione | Fase 1 (fotografia, 28 controlli): `Invoke-ADAssessment.ps1` 0.1.0 |
-| [sspr](active-directory/sspr/) | Self Service Password Reset on-prem: reset, cambio, sblocco, pannello admin, TOTP/SMS/email, dati in attributi AD confidenziali, installer guidato | Specifiche approvate, codice nel repo `fispas/sspr` |
+| [sspr](active-directory/sspr/) | Self Service Password Reset on-prem: reset, cambio, sblocco, pannello admin, TOTP/SMS/email, dati in attributi AD confidenziali, installer guidato | Fase 1: motore, schema AD, cifratura, API (C#/.NET, CI GitHub Actions) |

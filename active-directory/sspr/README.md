@@ -1,6 +1,20 @@
 # sspr — Self Service Password Reset (on-prem)
 
-> **Stato: specifiche approvate, sviluppo da avviare.** È un'applicazione web, quindi il codice va nel repo dedicato **`fispas/sspr`**. Qui restano le specifiche del progetto.
+> **Stato: fase 1 in corso** (motore, schema AD, cifratura, contratto API). Su richiesta, il progetto vive qui in `fispas/tools`, anche se è un'applicazione web.
+
+## Struttura della cartella
+| Percorso | Contenuto | Stato |
+|---|---|---|
+| `src/FispaSspr.Core` | Motore indipendente da AD e dal web: cifratura AES-GCM, TOTP, codici monouso, limiti dei tentativi, protezione degli account, policy password e password compromesse, codec degli attributi, interfacce, configurazione | Fase 1 |
+| `tests/FispaSspr.Core.Tests` | Test xUnit (vettori RFC 6238/4648, manomissioni, iniezione LDAP, account protetti...) | Fase 1 |
+| `api/openapi.yaml` | Contratto API tra interfaccia web e motore | Fase 1 |
+| `installer/schema/FispaSSPR-Schema.ldf` | Estensione dello schema AD | Fase 1 |
+| `docs/` | `schema.md`, `crypto.md`, `eventi.md` | Fase 1 |
+| `src/FispaSspr.Directory` | Implementazione AD (LDAP/Kerberos come gMSA), DPAPI-NG | Fase 2 |
+| `src/FispaSspr.Web` + `web/` | Servizio Windows (Kestrel) e interfaccia utente/amministratore | Fasi 2-3 |
+| `installer/` | Procedura guidata `Install-FispaSSPR.ps1` | Fase 4 |
+
+**Build e test**: `.github/workflows/sspr.yml` compila ed esegue i test su Windows a ogni push in questa cartella; i risultati sono nella scheda *Actions* del repo. In locale: `dotnet test tests/FispaSspr.Core.Tests`.
 
 Portale on-prem per Active Directory che permette agli utenti di:
 - **reimpostare** la password dimenticata;
@@ -38,7 +52,7 @@ Servizio Windows "FispaSSPR" (ASP.NET Core 8 self-contained, Kestrel)   <- gira 
 
 - **Niente IIS**: servizio Windows self-contained con Kestrel, quindi niente Hosting Bundle e niente .NET da installare. L'installer copia una cartella e registra il servizio.
 - **Intercambiabilità del motore**: la SPA parla solo con l'API (`api/openapi.yaml`). Il dominio applicativo sta dietro interfacce (`IDirectory`, `IEnrollmentStore`, `IOtpChannel`, `IAuditLog`). Schema AD, formato cifrato e configurazione sono documentati, così un backend Node.js può sostituire quello .NET senza toccare frontend, dati e installer.
-- **Repo `fispas/sspr`**: `src/` (backend), `web/` (SPA), `api/` (OpenAPI), `installer/` (procedura guidata PowerShell sullo standard di `fispas/tools`), `docs/`, test e CI GitHub Actions (build, test, analisi statica, pacchetto di rilascio).
+- **Cartella `active-directory/sspr`** di `fispas/tools`: `src/` (backend), `web/` (SPA), `api/` (OpenAPI), `installer/` (procedura guidata PowerShell sullo standard del repo), `docs/`, test e CI GitHub Actions.
 
 ## Dati in Active Directory
 
@@ -135,7 +149,7 @@ Previsti anche aggiornamento (sostituzione dei file, configurazione invariata) e
 
 ## Fasi di sviluppo
 
-1. Repo, struttura, OpenAPI, schema AD e cifratura, motore con test.
+1. Struttura, OpenAPI, schema AD e cifratura, motore con test. **In corso**: motore Core e test scritti, in attesa della prima esecuzione della CI.
 2. Registrazione dei metodi, cambio password, reset, sblocco.
 3. Pannello amministratori.
 4. Installer guidato, aggiornamento, disinstallazione.

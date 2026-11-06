@@ -1,0 +1,334 @@
+openapi: 3.0.3
+info:
+  title: FispaSSPR API
+  version: 0.1.0
+  description: |
+    Contratto tra l'interfaccia web (web/) e il motore del portale. Qualunque backend (ASP.NET Core, Node.js)
+    che rispetta questo contratto, lo schema AD (docs/schema.md) e il formato cifrato (docs/crypto.md) e' intercambiabile.
+
+    Regole comuni:
+    - solo HTTPS; cookie di sessione `Secure; HttpOnly; SameSite=Strict`; header `X-CSRF-Token` obbligatorio su POST/PUT/DELETE
+      (il valore si ottiene da GET /api/v1/session);
+    - le risposte di /reset e /unlock non rivelano mai se un utente esiste, e' bloccato o ha metodi registrati
+      (stessa risposta e tempi costanti);
+    - in caso di limite di tentativi: 429 con header Retry-After;
+    - gli errori seguono lo schema Problem (RFC 7807) con messaggi in italiano pronti da mostrare.
+servers:
+  - url: /api/v1
+tags:
+  - name: Sessione
+  - name: Registrazione
+  - name: Password
+  - name: Reset e sblocco
+  - name: Amministrazione
+paths:
+  /session:
+    get:
+      tags: [Sessione]
+      summary: Stato della sessione, token CSRF, utente se autenticato (autenticazione Windows o login)
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Session' } } } }
+  /session/login:
+    post:
+      tags: [Sessione]
+      summary: Login con nome utente e password attuale (accesso da VPN, senza autenticazione Windows)
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/Credentials' } } } }
+      responses:
+        '200': { description: Autenticato, content: { application/json: { schema: { $ref: '#/components/schemas/Session' } } } }
+        '401': { $ref: '#/components/responses/Problem' }
+        '429': { $ref: '#/components/responses/TooMany' }
+  /session/logout:
+    post: { tags: [Sessione], summary: Chiude la sessione, responses: { '204': { description: OK } } }
+
+  /enrollment:
+    get:
+      tags: [Registrazione]
+      summary: Metodi registrati dall'utente autenticato (mascherati)
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/EnrollmentStatus' } } } }
+        '401': { $ref: '#/components/responses/Problem' }
+  /enrollment/totp/start:
+    post:
+      tags: [Registrazione]
+      summary: Genera un nuovo segreto TOTP (non ancora salvato) e restituisce QR code e chiave da digitare
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/TotpSetup' } } } }
+  /enrollment/totp/confirm:
+    post:
+      tags: [Registrazione]
+      summary: Conferma con un codice dell'app; solo allora il segreto viene salvato in AD
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/Code' } } } }
+      responses:
+        '200': { description: Registrato, content: { application/json: { schema: { $ref: '#/components/schemas/EnrollmentStatus' } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+  /enrollment/{method}/start:
+    post:
+      tags: [Registrazione]
+      summary: Invia un codice di conferma al nuovo cellulare o alla nuova email
+      parameters: [ { name: method, in: path, required: true, schema: { type: string, enum: [sms, email] } } ]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [destination], properties: { destination: { type: string } } } } } }
+      responses:
+        '200': { description: Codice inviato, content: { application/json: { schema: { $ref: '#/components/schemas/Challenge' } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '429': { $ref: '#/components/responses/TooMany' }
+  /enrollment/{method}/confirm:
+    post:
+      tags: [Registrazione]
+      summary: Conferma il codice; il metodo viene salvato in AD e notificato sugli altri metodi registrati
+      parameters: [ { name: method, in: path, required: true, schema: { type: string, enum: [sms, email] } } ]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ChallengeAnswer' } } } }
+      responses:
+        '200': { description: Registrato, content: { application/json: { schema: { $ref: '#/components/schemas/EnrollmentStatus' } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+  /enrollment/{method}:
+    delete:
+      tags: [Registrazione]
+      summary: Rimuove un metodo (non consentito se si scende sotto il minimo richiesto)
+      parameters: [ { name: method, in: path, required: true, schema: { type: string, enum: [totp, sms, email] } } ]
+      responses:
+        '200': { description: Rimosso, content: { application/json: { schema: { $ref: '#/components/schemas/EnrollmentStatus' } } } }
+        '409': { $ref: '#/components/responses/Problem' }
+
+  /password/check:
+    post:
+      tags: [Password]
+      summary: Verifica dal vivo di una nuova password (policy di dominio/PSO, parole vietate, password compromesse)
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [password], properties: { password: { type: string, format: password } } } } } }
+      responses:
+        '200': { description: Esito, content: { application/json: { schema: { $ref: '#/components/schemas/PasswordCheck' } } } }
+  /password/change:
+    post:
+      tags: [Password]
+      summary: Cambio della password nota (eseguito come l'utente), con verifica aggiuntiva se configurata
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ChangeRequest' } } } }
+      responses:
+        '204': { description: Password cambiata }
+        '400': { $ref: '#/components/responses/Problem' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '429': { $ref: '#/components/responses/TooMany' }
+
+  /reset/start:
+    post:
+      tags: [Reset e sblocco]
+      summary: Avvia un flusso di reset o sblocco per un nome utente. Risposta identica in ogni caso.
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [userName, purpose], properties: { userName: { type: string }, purpose: { type: string, enum: [reset, unlock] } } } } } }
+      responses:
+        '200': { description: Flusso avviato (anche per utenti inesistenti o non gestibili), content: { application/json: { schema: { $ref: '#/components/schemas/Flow' } } } }
+        '429': { $ref: '#/components/responses/TooMany' }
+  /reset/{flowId}/challenge:
+    post:
+      tags: [Reset e sblocco]
+      summary: Sceglie un metodo; per SMS/email invia il codice
+      parameters: [ { name: flowId, in: path, required: true, schema: { type: string } } ]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [methodId], properties: { methodId: { type: string } } } } } }
+      responses:
+        '200': { description: Pronto per il codice, content: { application/json: { schema: { $ref: '#/components/schemas/Flow' } } } }
+        '429': { $ref: '#/components/responses/TooMany' }
+  /reset/{flowId}/verify:
+    post:
+      tags: [Reset e sblocco]
+      summary: Verifica il codice del metodo scelto
+      parameters: [ { name: flowId, in: path, required: true, schema: { type: string } } ]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/Code' } } } }
+      responses:
+        '200': { description: Stato aggiornato (verifiche completate o metodo successivo da usare), content: { application/json: { schema: { $ref: '#/components/schemas/Flow' } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+  /reset/{flowId}/complete:
+    post:
+      tags: [Reset e sblocco]
+      summary: Imposta la nuova password (reset) o sblocca l'account (unlock). Solo con tutte le verifiche completate.
+      parameters: [ { name: flowId, in: path, required: true, schema: { type: string } } ]
+      requestBody: { required: false, content: { application/json: { schema: { type: object, properties: { newPassword: { type: string, format: password } } } } } }
+      responses:
+        '204': { description: Completato }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+
+  /admin/dashboard:
+    get:
+      tags: [Amministrazione]
+      summary: Indicatori (registrati, reset, sblocchi, blocchi, tentativi sospetti)
+      security: [ { adminWindows: [] } ]
+      responses: { '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Dashboard' } } } } }
+  /admin/users:
+    get:
+      tags: [Amministrazione]
+      summary: Ricerca utenti nelle OU abilitate
+      security: [ { adminWindows: [] } ]
+      parameters: [ { name: q, in: query, required: true, schema: { type: string, minLength: 2 } } ]
+      responses: { '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/AdminUser' } } } } } }
+  /admin/users/{sid}:
+    get:
+      tags: [Amministrazione]
+      summary: Dettaglio utente (metodi mascherati, stato, ultimi eventi)
+      security: [ { adminWindows: [] } ]
+      parameters: [ { name: sid, in: path, required: true, schema: { type: string } } ]
+      responses: { '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/AdminUser' } } } }, '403': { $ref: '#/components/responses/Problem' } }
+  /admin/users/{sid}/unlock:
+    post:
+      tags: [Amministrazione]
+      summary: Sblocca l'account (Helpdesk, Admin)
+      security: [ { adminWindows: [] } ]
+      parameters: [ { name: sid, in: path, required: true, schema: { type: string } } ]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/AdminReason' } } } }
+      responses: { '204': { description: OK }, '403': { $ref: '#/components/responses/Problem' } }
+  /admin/users/{sid}/enrollment:
+    delete:
+      tags: [Amministrazione]
+      summary: "Azzera i metodi registrati: l'utente dovra' registrarsi di nuovo (Helpdesk, Admin)"
+      security: [ { adminWindows: [] } ]
+      parameters: [ { name: sid, in: path, required: true, schema: { type: string } } ]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/AdminReason' } } } }
+      responses: { '204': { description: OK }, '403': { $ref: '#/components/responses/Problem' } }
+  /admin/users/{sid}/invite:
+    post:
+      tags: [Amministrazione]
+      summary: Invia l'invito a registrarsi all'email aziendale dell'utente (Helpdesk, Admin)
+      security: [ { adminWindows: [] } ]
+      parameters: [ { name: sid, in: path, required: true, schema: { type: string } } ]
+      responses: { '204': { description: OK } }
+  /admin/users/{sid}/reset:
+    post:
+      tags: [Amministrazione]
+      summary: Reset con password temporanea e cambio obbligatorio al primo accesso (solo Admin, motivo obbligatorio)
+      security: [ { adminWindows: [] } ]
+      parameters: [ { name: sid, in: path, required: true, schema: { type: string } } ]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/AdminReason' } } } }
+      responses: { '200': { description: Password temporanea generata (mostrata una sola volta), content: { application/json: { schema: { type: object, properties: { temporaryPassword: { type: string } } } } } }, '403': { $ref: '#/components/responses/Problem' } }
+  /admin/audit:
+    get:
+      tags: [Amministrazione]
+      summary: Registro degli eventi, filtrabile; format=csv per l'esportazione
+      security: [ { adminWindows: [] } ]
+      parameters:
+        - { name: from, in: query, schema: { type: string, format: date-time } }
+        - { name: to, in: query, schema: { type: string, format: date-time } }
+        - { name: user, in: query, schema: { type: string } }
+        - { name: eventId, in: query, schema: { type: integer } }
+        - { name: format, in: query, schema: { type: string, enum: [json, csv] } }
+      responses: { '200': { description: OK } }
+  /admin/settings:
+    get:
+      tags: [Amministrazione]
+      summary: Configurazione (i segreti non vengono mai restituiti)
+      security: [ { adminWindows: [] } ]
+      responses: { '200': { description: OK } }
+    put:
+      tags: [Amministrazione]
+      summary: Aggiorna la configurazione (solo Admin, evento di audit)
+      security: [ { adminWindows: [] } ]
+      responses: { '204': { description: OK }, '400': { $ref: '#/components/responses/Problem' } }
+  /admin/health:
+    get:
+      tags: [Amministrazione]
+      summary: Stato di DC, SMTP, gateway SMS, certificato, chiave master
+      security: [ { adminWindows: [] } ]
+      responses: { '200': { description: OK } }
+
+components:
+  securitySchemes:
+    adminWindows:
+      type: http
+      scheme: negotiate
+      description: Autenticazione Windows, membro di SSPR-Admins o SSPR-Helpdesk, piu' secondo fattore TOTP nella sessione
+  responses:
+    Problem:
+      description: Errore
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    TooMany:
+      description: Troppi tentativi
+      headers: { Retry-After: { schema: { type: integer }, description: Secondi di attesa } }
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+  schemas:
+    Problem:
+      type: object
+      properties: { type: { type: string }, title: { type: string }, status: { type: integer }, detail: { type: string }, errors: { type: array, items: { type: string } } }
+    Session:
+      type: object
+      properties:
+        csrfToken: { type: string }
+        authenticated: { type: boolean }
+        userName: { type: string, nullable: true }
+        displayName: { type: string, nullable: true }
+        isAdmin: { type: boolean }
+        isHelpdesk: { type: boolean }
+        adminSecondFactorDone: { type: boolean }
+        enrolled: { type: boolean }
+        branding: { type: object, properties: { companyName: { type: string }, logoUrl: { type: string }, helpdeskContact: { type: string } } }
+    Credentials:
+      type: object
+      required: [userName, password]
+      properties: { userName: { type: string }, password: { type: string, format: password } }
+    Code:
+      type: object
+      required: [code]
+      properties: { code: { type: string, pattern: '^[0-9 ]{6,8}$' } }
+    Challenge:
+      type: object
+      properties: { challengeId: { type: string }, destinationMasked: { type: string }, expiresAt: { type: string, format: date-time } }
+    ChallengeAnswer:
+      type: object
+      required: [challengeId, code]
+      properties: { challengeId: { type: string }, code: { type: string } }
+    TotpSetup:
+      type: object
+      properties: { qrCodeSvg: { type: string }, manualKey: { type: string }, issuer: { type: string }, account: { type: string } }
+    EnrollmentStatus:
+      type: object
+      properties:
+        minimumMethods: { type: integer }
+        enrolled: { type: boolean }
+        methods:
+          type: array
+          items: { type: object, properties: { method: { type: string, enum: [totp, sms, email] }, destinationMasked: { type: string }, verifiedAt: { type: string, format: date-time } } }
+        availableMethods: { type: array, items: { type: string, enum: [totp, sms, email] } }
+    PasswordCheck:
+      type: object
+      properties: { valid: { type: boolean }, errors: { type: array, items: { type: string } }, minLength: { type: integer } }
+    ChangeRequest:
+      type: object
+      required: [currentPassword, newPassword]
+      properties:
+        currentPassword: { type: string, format: password }
+        newPassword: { type: string, format: password }
+        verification: { $ref: '#/components/schemas/ChallengeAnswer' }
+    Flow:
+      type: object
+      description: Stato di un flusso di reset/sblocco. Per utenti inesistenti o non gestibili il flusso e' fittizio ma indistinguibile.
+      properties:
+        flowId: { type: string }
+        purpose: { type: string, enum: [reset, unlock] }
+        expiresAt: { type: string, format: date-time }
+        verificationsRequired: { type: integer }
+        verificationsDone: { type: integer }
+        methods:
+          type: array
+          items: { type: object, properties: { methodId: { type: string }, method: { type: string, enum: [totp, sms, email] }, destinationMasked: { type: string }, used: { type: boolean } } }
+        currentChallenge: { $ref: '#/components/schemas/Challenge' }
+        readyToComplete: { type: boolean }
+    Dashboard:
+      type: object
+      properties:
+        usersInScope: { type: integer }
+        usersEnrolled: { type: integer }
+        resetsLast30Days: { type: integer }
+        changesLast30Days: { type: integer }
+        unlocksLast30Days: { type: integer }
+        lockedOutNow: { type: integer }
+        blockedAttemptsLast24h: { type: integer }
+    AdminUser:
+      type: object
+      properties:
+        sid: { type: string }
+        userName: { type: string }
+        displayName: { type: string }
+        enabled: { type: boolean }
+        lockedOut: { type: boolean }
+        manageable: { type: boolean }
+        notManageableReason: { type: string, nullable: true }
+        enrollment: { $ref: '#/components/schemas/EnrollmentStatus' }
+        lastEvents: { type: array, items: { type: object, properties: { time: { type: string, format: date-time }, eventId: { type: integer }, message: { type: string } } } }
+    AdminReason:
+      type: object
+      required: [reason]
+      properties: { reason: { type: string, minLength: 5, maxLength: 500 } }

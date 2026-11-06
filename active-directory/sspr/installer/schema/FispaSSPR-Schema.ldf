@@ -1,0 +1,126 @@
+# FispaSSPR - estensione dello schema di Active Directory
+# Importare con:  ldifde -i -f FispaSSPR-Schema.ldf -c "DC=X" "<DN della radice della foresta>" -k
+# Va eseguito da un membro di Schema Admins, sul DC che ha il ruolo di Schema Master.
+# ATTENZIONE: le aggiunte allo schema sono permanenti (si possono disattivare, non eliminare).
+# OID: radice 1.2.840.113556.1.8000.2554.5811.899.4382.19277.44156.3796773.11388313 (metodo Microsoft da GUID)
+#   .1.x attributi, .2.x classi. Gli schemaIDGUID sono fissi: servono per le ACL per attributo.
+
+dn: CN=fispaSspr-Totp,CN=Schema,CN=Configuration,DC=X
+changetype: ntdsSchemaAdd
+objectClass: top
+objectClass: attributeSchema
+cn: fispaSspr-Totp
+lDAPDisplayName: fispaSsprTotp
+adminDisplayName: fispaSspr-Totp
+adminDescription: FispaSSPR - segreto TOTP cifrato (AES-256-GCM)
+attributeID: 1.2.840.113556.1.8000.2554.5811.899.4382.19277.44156.3796773.11388313.1.1
+attributeSyntax: 2.5.5.12
+oMSyntax: 64
+isSingleValued: TRUE
+rangeUpper: 2048
+searchFlags: 128
+isMemberOfPartialAttributeSet: FALSE
+showInAdvancedViewOnly: TRUE
+systemOnly: FALSE
+schemaIDGUID:: 4B4Q4DcTm0ivGBkDD1VBsw==
+
+dn: CN=fispaSspr-Mobile,CN=Schema,CN=Configuration,DC=X
+changetype: ntdsSchemaAdd
+objectClass: top
+objectClass: attributeSchema
+cn: fispaSspr-Mobile
+lDAPDisplayName: fispaSsprMobile
+adminDisplayName: fispaSspr-Mobile
+adminDescription: FispaSSPR - cellulare verificato, cifrato (AES-256-GCM)
+attributeID: 1.2.840.113556.1.8000.2554.5811.899.4382.19277.44156.3796773.11388313.1.2
+attributeSyntax: 2.5.5.12
+oMSyntax: 64
+isSingleValued: TRUE
+rangeUpper: 2048
+searchFlags: 128
+isMemberOfPartialAttributeSet: FALSE
+showInAdvancedViewOnly: TRUE
+systemOnly: FALSE
+schemaIDGUID:: CXbZrSu0VkOy+t40e2KWpQ==
+
+dn: CN=fispaSspr-Email,CN=Schema,CN=Configuration,DC=X
+changetype: ntdsSchemaAdd
+objectClass: top
+objectClass: attributeSchema
+cn: fispaSspr-Email
+lDAPDisplayName: fispaSsprEmail
+adminDisplayName: fispaSspr-Email
+adminDescription: FispaSSPR - email secondaria verificata, cifrata (AES-256-GCM)
+attributeID: 1.2.840.113556.1.8000.2554.5811.899.4382.19277.44156.3796773.11388313.1.3
+attributeSyntax: 2.5.5.12
+oMSyntax: 64
+isSingleValued: TRUE
+rangeUpper: 2048
+searchFlags: 128
+isMemberOfPartialAttributeSet: FALSE
+showInAdvancedViewOnly: TRUE
+systemOnly: FALSE
+schemaIDGUID:: Y8X19TvrHECIi5IoEA1DFg==
+
+dn: CN=fispaSspr-State,CN=Schema,CN=Configuration,DC=X
+changetype: ntdsSchemaAdd
+objectClass: top
+objectClass: attributeSchema
+cn: fispaSspr-State
+lDAPDisplayName: fispaSsprState
+adminDisplayName: fispaSspr-State
+adminDescription: FispaSSPR - stato della registrazione (JSON cifrato, AES-256-GCM)
+attributeID: 1.2.840.113556.1.8000.2554.5811.899.4382.19277.44156.3796773.11388313.1.4
+attributeSyntax: 2.5.5.12
+oMSyntax: 64
+isSingleValued: TRUE
+rangeUpper: 4096
+searchFlags: 128
+isMemberOfPartialAttributeSet: FALSE
+showInAdvancedViewOnly: TRUE
+systemOnly: FALSE
+schemaIDGUID:: MXy3595tc0uo5SVgPMUHpQ==
+
+dn:
+changetype: modify
+add: schemaUpdateNow
+schemaUpdateNow: 1
+-
+
+dn: CN=fispaSspr-User,CN=Schema,CN=Configuration,DC=X
+changetype: ntdsSchemaAdd
+objectClass: top
+objectClass: classSchema
+cn: fispaSspr-User
+lDAPDisplayName: fispaSsprUser
+adminDisplayName: fispaSspr-User
+adminDescription: FispaSSPR - classe ausiliaria con i metodi di verifica registrati
+governsID: 1.2.840.113556.1.8000.2554.5811.899.4382.19277.44156.3796773.11388313.2.1
+objectClassCategory: 3
+subClassOf: top
+mayContain: fispaSsprTotp
+mayContain: fispaSsprMobile
+mayContain: fispaSsprEmail
+mayContain: fispaSsprState
+defaultObjectCategory: CN=fispaSspr-User,CN=Schema,CN=Configuration,DC=X
+showInAdvancedViewOnly: TRUE
+systemOnly: FALSE
+schemaIDGUID:: K2vNp/A12U+8bBfui09N5w==
+
+dn:
+changetype: modify
+add: schemaUpdateNow
+schemaUpdateNow: 1
+-
+
+dn: CN=User,CN=Schema,CN=Configuration,DC=X
+changetype: ntdsSchemaModify
+add: auxiliaryClass
+auxiliaryClass: fispaSsprUser
+-
+
+dn:
+changetype: modify
+add: schemaUpdateNow
+schemaUpdateNow: 1
+-

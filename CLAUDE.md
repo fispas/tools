@@ -17,7 +17,7 @@ Cartelle per **area / progetto**, mai per cliente:
 <area>/<gruppo>/<tool>/   es. active-directory/gpo/winrm-enable/
 ```
 Aree attuali: `active-directory/`, `rds/`, `windows/`, `utility/`. Se un tool non rientra, si crea una nuova area.
-Le web app complete restano nei loro repo dedicati.
+Le web app complete restano nei loro repo dedicati. **Eccezione**: `active-directory/sspr` (portale SSPR, C#/.NET) vive in questo repo per scelta di Fispa; build e test con `.github/workflows/sspr.yml`.
 
 ## Ogni tool
 Copiare `_template/`. Ogni cartella tool contiene:

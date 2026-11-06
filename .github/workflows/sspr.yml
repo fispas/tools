@@ -1,0 +1,35 @@
+name: sspr
+
+on:
+  push:
+    paths:
+      - 'active-directory/sspr/**'
+      - '.github/workflows/sspr.yml'
+  pull_request:
+    paths:
+      - 'active-directory/sspr/**'
+  workflow_dispatch:
+
+jobs:
+  build-test:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: active-directory/sspr
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Restore
+        run: dotnet restore tests/FispaSspr.Core.Tests/FispaSspr.Core.Tests.csproj
+      - name: Build
+        run: dotnet build tests/FispaSspr.Core.Tests/FispaSspr.Core.Tests.csproj --no-restore -c Release
+      - name: Test
+        run: dotnet test tests/FispaSspr.Core.Tests/FispaSspr.Core.Tests.csproj --no-build -c Release --logger "trx;LogFileName=test-results.trx" --results-directory TestResults
+      - name: Risultati dei test
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sspr-test-results
+          path: active-directory/sspr/TestResults
