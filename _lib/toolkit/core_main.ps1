@@ -1,6 +1,11 @@
 
-#region CONFIGURAZIONE E INTERFACCIA (identico nei migratori FSLogix)
+#region CONFIGURAZIONE E INTERFACCIA (libreria _lib/toolkit)
 . $Engine
+
+# etichette dell'interfaccia: ogni tool puo' personalizzarle in $Tool
+foreach ($kv in @{ ItemNoun = 'elementi'; ItemTab = 'Elementi'; StartLabel = 'Avvia'; RunningLabel = 'Operazione in corso'; CloseWarning = '' }.GetEnumerator()) {
+    if (-not $Tool.ContainsKey($kv.Key)) { $Tool[$kv.Key] = $kv.Value }
+}
 
 $ToolDataDir = Join-Path $env:ProgramData ('FispaTools\' + $Tool.Name)
 $DefaultConfigPath = Join-Path $ToolDataDir 'config.json'
@@ -72,7 +77,7 @@ if ($NoGui) {
     if ($errs.Count) { foreach ($e in $errs) { Write-ToolLog $e 'ERROR' }; exit 1 }
     $items = @(Get-ToolItems -Config $Config | Where-Object { $_.Selectable })
     if ($User) { $items = @($items | Where-Object { $User -contains $_.Utente }) }
-    if (-not $items.Count) { Write-ToolLog 'Nessun profilo da elaborare.' 'WARN'; exit 0 }
+    if (-not $items.Count) { Write-ToolLog "Nessun elemento da elaborare ($($Tool.ItemNoun))." 'WARN'; exit 0 }
     $res = @(Invoke-ToolRun -Config $Config -Items $items)
     if (@($res | Where-Object { $_.Esito -eq 'Fallito' }).Count) { exit 2 }
     exit 0
@@ -109,7 +114,7 @@ $form.Font = New-Object System.Drawing.Font('Segoe UI', 9)
 $tabs = New-Object System.Windows.Forms.TabControl
 $tabs.Dock = 'Fill'
 $tabCfg = New-Object System.Windows.Forms.TabPage('Configurazione')
-$tabPro = New-Object System.Windows.Forms.TabPage('Profili')
+$tabPro = New-Object System.Windows.Forms.TabPage($Tool.ItemTab)
 $tabLog = New-Object System.Windows.Forms.TabPage('Log')
 $tabs.TabPages.AddRange(@($tabCfg, $tabPro, $tabLog))
 
@@ -279,7 +284,7 @@ $btnLoad.Add_Click({
 })
 $btnDefaults.Add_Click({ if (Confirm-UI 'Ripristinare i valori predefiniti? Le modifiche non salvate vanno perse.') { Set-FormFromConfig (Get-ToolDefaultConfig) } })
 
-# ---------------------------------------------------------- scheda Profili
+# ---------------------------------------------------------- scheda elementi (analisi e selezione)
 $proBar = New-Object System.Windows.Forms.FlowLayoutPanel
 $proBar.Dock = 'Top'
 $proBar.AutoSize = $true
@@ -373,7 +378,7 @@ $btnScan.Add_Click({
     try {
         $items = @(Get-ToolItems -Config $cfg)
         Show-Items $items
-        Write-ToolLog ('Analisi completata: {0} profili trovati, {1} migrabili.' -f $items.Count, @($items | Where-Object { $_.Selectable }).Count) 'OK'
+        Write-ToolLog ('Analisi completata: {0} {1} trovati, {2} elaborabili.' -f $items.Count, $Tool.ItemNoun, @($items | Where-Object { $_.Selectable }).Count) 'OK'
     } catch {
         Write-ToolLog "Analisi non riuscita: $($_.Exception.Message)" 'ERROR'
         Show-Err "Analisi non riuscita:`n$($_.Exception.Message)"
@@ -415,7 +420,7 @@ $prog.Height = 16
 $runBar = New-Object System.Windows.Forms.FlowLayoutPanel
 $runBar.Dock = 'Fill'
 $runBar.Padding = New-Object System.Windows.Forms.Padding(6, 6, 6, 0)
-$btnStart = New-Object System.Windows.Forms.Button; $btnStart.Text = 'Avvia migrazione'; $btnStart.Width = 160; $btnStart.Height = 30
+$btnStart = New-Object System.Windows.Forms.Button; $btnStart.Text = $Tool.StartLabel; $btnStart.Width = 160; $btnStart.Height = 30
 $btnStart.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
 $btnCancel = New-Object System.Windows.Forms.Button; $btnCancel.Text = 'Annulla'; $btnCancel.Width = 100; $btnCancel.Height = 30; $btnCancel.Enabled = $false
 $btnOpenLog = New-Object System.Windows.Forms.Button; $btnOpenLog.Text = 'Cartella log e report'; $btnOpenLog.AutoSize = $true; $btnOpenLog.Height = 30
@@ -505,10 +510,10 @@ $btnStart.Add_Click({
     if ($errs.Count) { Show-Err ($errs -join "`n"); return }
     $grid.EndEdit() | Out-Null
     $items = @(foreach ($r in $grid.Rows) { if ($r.Cells['Sel'].Value -eq $true -and $r.Tag.Selectable) { $r.Tag } })
-    if (-not $items.Count) { Show-Info "Nessun profilo selezionato.`nScheda Profili: premere Analizza e spuntare i profili da migrare."; $tabs.SelectedTab = $tabPro; return }
+    if (-not $items.Count) { Show-Info "Nessun elemento selezionato.`nScheda $($Tool.ItemTab): premere Analizza e spuntare $($Tool.ItemNoun) da elaborare."; $tabs.SelectedTab = $tabPro; return }
     $mode = 'ESECUZIONE REALE'
     if ($cfg.DryRun) { $mode = 'SIMULAZIONE (nessuna modifica)' }
-    $msg = "Profili da elaborare: $($items.Count)`n"
+    $msg = "$($Tool.ItemTab) da elaborare: $($items.Count)`n"
     foreach ($k in $Tool.ConfirmKeys) { $msg += "$k : $(@($cfg[$k]) -join '; ')`n" }
     $msg += "`nModalita': $mode`n`nProcedere?"
     if (-not (Confirm-UI $msg)) { return }
@@ -533,7 +538,7 @@ $btnStart.Add_Click({
 $btnCancel.Add_Click({
     $State.Cancel = $true
     $btnCancel.Enabled = $false
-    Write-ToolLog "Annullamento richiesto: termino il profilo in corso e mi fermo." 'WARN'
+    Write-ToolLog "Annullamento richiesto: termino l'elemento in corso e mi fermo." 'WARN'
 })
 
 $btnOpenLog.Add_Click({ if ($State.LogDir -and (Test-Path -LiteralPath $State.LogDir)) { Start-Process explorer.exe $State.LogDir } })
@@ -543,11 +548,11 @@ $form.Add_FormClosing({
     if ($script:Running) {
         $e.Cancel = $true
         if ($script:CloseWhenDone) { return }
-        if (Confirm-UI "Migrazione in corso.`nInterrompere dopo il profilo in corso e chiudere?`n(Non chiudere il processo a forza: un disco potrebbe restare montato.)") {
+        if (Confirm-UI "$($Tool.RunningLabel).`nInterrompere dopo l'elemento in corso e chiudere?$($Tool.CloseWarning)") {
             $State.Cancel = $true
             $script:CloseWhenDone = $true
             $btnCancel.Enabled = $false
-            Write-ToolLog 'Chiusura richiesta: attendo la fine del profilo in corso.' 'WARN'
+            Write-ToolLog "Chiusura richiesta: attendo la fine dell'elemento in corso." 'WARN'
         }
     }
 })

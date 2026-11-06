@@ -1,5 +1,5 @@
 
-#region AVVIO (identico nei migratori FSLogix)
+#region AVVIO (libreria _lib/toolkit)
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 $isSta = [System.Threading.Thread]::CurrentThread.GetApartmentState() -eq 'STA'
 if (-not $NoGui -and (-not $isAdmin -or -not $isSta)) {

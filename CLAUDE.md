@@ -31,7 +31,8 @@ Standard dei tool (modello: `rds/fslogix/compact-vhdx` e i migratori FSLogix):
 - **robusti**: lavoro lungo in background (runspace) con GUI reattiva, annullamento pulito, simulazione attiva di default, conferma prima di agire, codici di uscita di robocopy/icacls/diskpart/exe sempre controllati, cleanup in `finally`, log + report CSV
 - **nessuna dipendenza evitabile**: es. SID ↔ utente con .NET invece del modulo ActiveDirectory, permessi per SID (indipendenti dalla lingua), dischi montati su cartella invece che su lettera
 - file `.ps1` in **UTF-8 con BOM** (PowerShell 5.1 legge male i file senza BOM)
-- codice condiviso tra più tool: sorgenti comuni + build (vedi `rds/fslogix/_migrator-src`), i file finali restano single-file
+- codice condiviso: libreria `_lib/toolkit` (avvio/elevazione, motore con log/esecuzione/report, configurazione JSON, `-NoGui`, GUI a schede generata dallo schema dei campi). Un nuovo tool con GUI fornisce solo `_src/head.ps1` (help, parametri, `$Tool`), `_src/engine.ps1` (`Get-ToolDefaultConfig`, `Get-ToolPrereqIssues`, `Test-ToolConfig`, `Get-ToolItems`, `Invoke-ToolItem`) e `_src/gui.ps1` (`$ToolSchema`, `$ToolColumns`), si registra in `_lib/build.py` e si genera con `python _lib/build.py`. I file generati restano single-file e non si modificano a mano
+- sorgenti **solo ASCII** (accenti come `e'`): `build.py` blocca i caratteri non ASCII
 
 Script PowerShell:
 - header con `.SYNOPSIS`, `.DESCRIPTION`, `.PARAMETER`, `.EXAMPLE`, `.NOTES` (versione)

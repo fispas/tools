@@ -49,10 +49,15 @@ $Tool = @{
     Name        = 'UPDToFSLogix'
     Title       = 'UPD -> FSLogix'
     Version     = '2.0.0'
+    ItemNoun     = 'profili'
+    ItemTab      = 'Profili'
+    StartLabel   = 'Avvia migrazione'
+    RunningLabel = 'Migrazione in corso'
+    CloseWarning = "`n(Non chiudere il processo a forza: un disco potrebbe restare montato.)"
     ConfirmKeys = @('SourcePath', 'DestinationPath', 'FolderPattern', 'DiskNamePattern', 'ExistingDisk')
 }
 
-#region AVVIO (identico nei migratori FSLogix)
+#region AVVIO (libreria _lib/toolkit)
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 $isSta = [System.Threading.Thread]::CurrentThread.GetApartmentState() -eq 'STA'
 if (-not $NoGui -and (-not $isAdmin -or -not $isSta)) {
@@ -83,7 +88,7 @@ $State = [hashtable]::Synchronized(@{
 
 # Motore: definito una volta, usato dalla GUI, dal runspace di esecuzione e dalla modalita' -NoGui
 $Engine = {
-    #region MOTORE COMUNE (identico nei migratori FSLogix: una correzione qui va replicata negli altri)
+    #region MOTORE BASE (libreria _lib/toolkit, comune a tutti i tool GUI del repo)
 
     function Write-ToolLog {
         param(
@@ -104,36 +109,6 @@ $Engine = {
 
     function Send-ToolMessage([hashtable]$Message) {
         if (-not $State.Headless -and $State.Queue) { $State.Queue.Enqueue($Message) }
-    }
-
-    function Get-FSLogixValue([string]$Name) {
-        try { (Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\FSLogix\Profiles' -Name $Name -ErrorAction Stop).$Name } catch { $null }
-    }
-
-    # Valori di default letti dalla configurazione FSLogix della macchina, se presente
-    function Get-DefaultNaming {
-        $folder = Get-FSLogixValue 'SIDDirNamePattern'
-        if (-not $folder) {
-            if ((Get-FSLogixValue 'FlipFlopProfileDirectoryName') -eq 1) { $folder = '%username%_%sid%' } else { $folder = '%sid%_%username%' }
-        }
-        $disk = Get-FSLogixValue 'VHDNamePattern'
-        if (-not $disk) { $disk = 'Profile_%username%' }
-        $disk = $disk -replace '\.vhdx?$', ''
-        $size = Get-FSLogixValue 'SizeInMBs'
-        if (-not $size) { $size = 30000 }
-        $vt = [string](Get-FSLogixValue 'VolumeType')
-        if ($vt -notin @('VHD', 'VHDX')) { $vt = 'VHDX' }
-        $dyn = Get-FSLogixValue 'IsDynamic'
-        $diskType = 'Dinamico'
-        if ($null -ne $dyn -and [int]$dyn -eq 0) { $diskType = 'Fisso' }
-        @{ FolderPattern = $folder; DiskNamePattern = $disk; SizeMB = [int]$size; VolumeType = $vt.ToUpper(); DiskType = $diskType }
-    }
-
-    function Get-DefaultFrxPath {
-        $dir = $null
-        try { $dir = (Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\FSLogix\Apps' -Name InstallPath -ErrorAction Stop).InstallPath } catch { }
-        if (-not $dir) { $dir = Join-Path $env:ProgramFiles 'FSLogix\Apps' }
-        Join-Path $dir 'frx.exe'
     }
 
     # SID -> account (DOMINIO\utente) senza modulo ActiveDirectory; nome visualizzato via ADSI se disponibile
@@ -164,22 +139,6 @@ $Engine = {
 
     function Test-ExcludedUser($Config, [string]$Sam) {
         @($Config.ExcludeUsers) -contains $Sam
-    }
-
-    # Cartella e disco di destinazione secondo i pattern FSLogix (%sid%, %username%, %userdomain%)
-    function Get-ProfileTarget($Config, [string]$Sid, [string]$Sam, [string]$Domain, [string]$Extension) {
-        $expand = {
-            param([string]$Pattern)
-            $r = $Pattern -replace '%sid%', $Sid.Replace('$', '$$')
-            $r = $r -replace '%username%', $Sam.Replace('$', '$$')
-            $r = $r -replace '%userdomain%', ([string]$Domain).Replace('$', '$$')
-            foreach ($c in [System.IO.Path]::GetInvalidFileNameChars()) { $r = $r.Replace([string]$c, '_') }
-            $r
-        }
-        $folderName = & $expand $Config.FolderPattern
-        $diskName = (& $expand ($Config.DiskNamePattern -replace '\.vhdx?$', '')) + $Extension.ToLower()
-        $folder = Join-Path $Config.DestinationPath $folderName
-        [pscustomobject]@{ Folder = $folder; Disk = (Join-Path $folder $diskName) }
     }
 
     function Test-FileExclusive([string]$Path) {
@@ -213,6 +172,126 @@ public static extern bool GetDiskFreeSpaceEx(string lpDirectoryName, out ulong l
         if ($free -lt $Bytes) {
             throw ('Spazio insufficiente su {0}: liberi {1:N1} GB, necessari {2:N1} GB' -f $Path, ($free / 1GB), ($Bytes / 1GB))
         }
+    }
+
+    # Avvio processo con lettura asincrona di stdout/stderr (niente deadlock su output lunghi)
+    function Invoke-ProcessCapture([string]$FilePath, [string]$Arguments) {
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $FilePath
+        $psi.Arguments = $Arguments
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+        $p = [System.Diagnostics.Process]::Start($psi)
+        $out = $p.StandardOutput.ReadToEndAsync()
+        $err = $p.StandardError.ReadToEndAsync()
+        $p.WaitForExit()
+        [pscustomobject]@{ ExitCode = $p.ExitCode; StdOut = $out.Result; StdErr = $err.Result }
+    }
+
+    function Invoke-ToolRun($Config, $Items) {
+        $list = @($Items)
+        $n = $list.Count
+        $results = New-Object System.Collections.Generic.List[object]
+        $mode = 'ESECUZIONE REALE'
+        if ($Config.DryRun) { $mode = 'SIMULAZIONE (nessuna modifica)' }
+        Write-ToolLog ('=== {0} {1} - {2} {3} - {4}' -f $Tool.Title, $Tool.Version, $n, $Tool.ItemNoun, $mode) 'STEP'
+        foreach ($k in @($Config.Keys)) { Write-ToolLog ('  {0} = {1}' -f $k, (@($Config[$k]) -join '; ')) }
+        for ($i = 0; $i -lt $n; $i++) {
+            $item = $list[$i]
+            if ($State.Cancel) {
+                for ($j = $i; $j -lt $n; $j++) {
+                    $results.Add([pscustomobject]@{ Utente = $list[$j].Utente; SID = $list[$j].SID; Origine = $list[$j].Origine; Destinazione = ''; Esito = 'Annullato'; Messaggio = "Annullato dall'operatore"; DurataSec = 0; DimensioneMB = '' })
+                    Send-ToolMessage @{ T = 'row'; K = $list[$j].Key; E = 'Annullato' }
+                }
+                Write-ToolLog "Annullato dall'operatore: $($n - $i) $($Tool.ItemNoun) non elaborati." 'WARN'
+                break
+            }
+            Send-ToolMessage @{ T = 'prog'; C = $i; N = $n; M = ('{0}/{1} {2}' -f ($i + 1), $n, $item.Utente) }
+            Write-ToolLog ('--- [{0}/{1}] {2} ({3})' -f ($i + 1), $n, $item.Utente, $item.SID) 'STEP'
+            $sw = [System.Diagnostics.Stopwatch]::StartNew()
+            $r = @{ Esito = 'Fallito'; Messaggio = ''; Destinazione = ''; DimensioneMB = '' }
+            try {
+                $o = Invoke-ToolItem -Config $Config -Item $item
+                foreach ($k in @($o.Keys)) { $r[$k] = $o[$k] }
+            } catch {
+                $r.Esito = 'Fallito'
+                $r.Messaggio = $_.Exception.Message
+                Write-ToolLog "Errore: $($r.Messaggio)" 'ERROR'
+            }
+            $sw.Stop()
+            $lvl = switch ($r.Esito) { 'OK' { 'OK' } 'Fallito' { 'ERROR' } 'Saltato' { 'WARN' } default { 'INFO' } }
+            $txt = $r.Esito
+            if ($r.Messaggio) { $txt += " - $($r.Messaggio)" }
+            Write-ToolLog ('{0}: {1} ({2:N0} s)' -f $item.Utente, $txt, $sw.Elapsed.TotalSeconds) $lvl
+            Send-ToolMessage @{ T = 'row'; K = $item.Key; E = $r.Esito }
+            $results.Add([pscustomobject]@{
+                Utente = $item.Utente; SID = $item.SID; Origine = $item.Origine; Destinazione = $r.Destinazione
+                Esito = $r.Esito; Messaggio = $r.Messaggio; DurataSec = [math]::Round($sw.Elapsed.TotalSeconds, 0); DimensioneMB = $r.DimensioneMB
+            })
+        }
+        $State.ReportFile = Join-Path $State.LogDir ('{0}_Report_{1}.csv' -f $Tool.Name, (Get-Date -Format 'yyyyMMdd_HHmmss'))
+        try { $results | Export-Csv -LiteralPath $State.ReportFile -NoTypeInformation -Delimiter ';' -Encoding UTF8 -ErrorAction Stop }
+        catch { Write-ToolLog "Report CSV non scritto: $($_.Exception.Message)" 'ERROR'; $State.ReportFile = $null }
+        $count = @{}
+        foreach ($e in @('OK', 'Simulato', 'Saltato', 'Fallito', 'Annullato')) { $count[$e] = @($results | Where-Object { $_.Esito -eq $e }).Count }
+        $summary = 'Totale {0} | OK {1} | Simulati {2} | Saltati {3} | Falliti {4} | Annullati {5}' -f $n, $count.OK, $count.Simulato, $count.Saltato, $count.Fallito, $count.Annullato
+        $lvl = 'OK'
+        if ($count.Fallito -gt 0) { $lvl = 'ERROR' } elseif ($count.Saltato -gt 0 -or $count.Annullato -gt 0) { $lvl = 'WARN' }
+        Write-ToolLog "=== Fine. $summary" $lvl
+        if ($State.ReportFile) { Write-ToolLog "Report: $($State.ReportFile)" }
+        Send-ToolMessage @{ T = 'done'; S = $summary; F = $count.Fallito; R = $State.ReportFile }
+        , $results.ToArray()
+    }
+    #endregion
+
+    #region COMUNE AI MIGRATORI FSLOGIX (naming, dischi, permessi, ProfileData.reg)
+
+    function Get-FSLogixValue([string]$Name) {
+        try { (Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\FSLogix\Profiles' -Name $Name -ErrorAction Stop).$Name } catch { $null }
+    }
+
+    # Valori di default letti dalla configurazione FSLogix della macchina, se presente
+    function Get-DefaultNaming {
+        $folder = Get-FSLogixValue 'SIDDirNamePattern'
+        if (-not $folder) {
+            if ((Get-FSLogixValue 'FlipFlopProfileDirectoryName') -eq 1) { $folder = '%username%_%sid%' } else { $folder = '%sid%_%username%' }
+        }
+        $disk = Get-FSLogixValue 'VHDNamePattern'
+        if (-not $disk) { $disk = 'Profile_%username%' }
+        $disk = $disk -replace '\.vhdx?$', ''
+        $size = Get-FSLogixValue 'SizeInMBs'
+        if (-not $size) { $size = 30000 }
+        $vt = [string](Get-FSLogixValue 'VolumeType')
+        if ($vt -notin @('VHD', 'VHDX')) { $vt = 'VHDX' }
+        $dyn = Get-FSLogixValue 'IsDynamic'
+        $diskType = 'Dinamico'
+        if ($null -ne $dyn -and [int]$dyn -eq 0) { $diskType = 'Fisso' }
+        @{ FolderPattern = $folder; DiskNamePattern = $disk; SizeMB = [int]$size; VolumeType = $vt.ToUpper(); DiskType = $diskType }
+    }
+
+    function Get-DefaultFrxPath {
+        $dir = $null
+        try { $dir = (Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\FSLogix\Apps' -Name InstallPath -ErrorAction Stop).InstallPath } catch { }
+        if (-not $dir) { $dir = Join-Path $env:ProgramFiles 'FSLogix\Apps' }
+        Join-Path $dir 'frx.exe'
+    }
+
+    # Cartella e disco di destinazione secondo i pattern FSLogix (%sid%, %username%, %userdomain%)
+    function Get-ProfileTarget($Config, [string]$Sid, [string]$Sam, [string]$Domain, [string]$Extension) {
+        $expand = {
+            param([string]$Pattern)
+            $r = $Pattern -replace '%sid%', $Sid.Replace('$', '$$')
+            $r = $r -replace '%username%', $Sam.Replace('$', '$$')
+            $r = $r -replace '%userdomain%', ([string]$Domain).Replace('$', '$$')
+            foreach ($c in [System.IO.Path]::GetInvalidFileNameChars()) { $r = $r.Replace([string]$c, '_') }
+            $r
+        }
+        $folderName = & $expand $Config.FolderPattern
+        $diskName = (& $expand ($Config.DiskNamePattern -replace '\.vhdx?$', '')) + $Extension.ToLower()
+        $folder = Join-Path $Config.DestinationPath $folderName
+        [pscustomobject]@{ Folder = $folder; Disk = (Join-Path $folder $diskName) }
     }
 
     # Gestione di un disco FSLogix gia' presente. $true = procedere, $false = saltare
@@ -345,82 +424,11 @@ public static extern bool GetDiskFreeSpaceEx(string lpDirectoryName, out ulong l
         catch { Write-ToolLog "Impossibile eliminare il disco incompleto $Path : $($_.Exception.Message)" 'ERROR' }
     }
 
-    # Avvio processo con lettura asincrona di stdout/stderr (niente deadlock su output lunghi)
-    function Invoke-ProcessCapture([string]$FilePath, [string]$Arguments) {
-        $psi = New-Object System.Diagnostics.ProcessStartInfo
-        $psi.FileName = $FilePath
-        $psi.Arguments = $Arguments
-        $psi.RedirectStandardOutput = $true
-        $psi.RedirectStandardError = $true
-        $psi.UseShellExecute = $false
-        $psi.CreateNoWindow = $true
-        $p = [System.Diagnostics.Process]::Start($psi)
-        $out = $p.StandardOutput.ReadToEndAsync()
-        $err = $p.StandardError.ReadToEndAsync()
-        $p.WaitForExit()
-        [pscustomobject]@{ ExitCode = $p.ExitCode; StdOut = $out.Result; StdErr = $err.Result }
-    }
-
     function Test-DiskValid([string]$Path) {
         if (-not (Test-Path -LiteralPath $Path)) { throw "Disco non trovato a fine migrazione: $Path" }
         $len = (Get-Item -LiteralPath $Path).Length
         if ($len -lt 1MB) { throw "Il disco risulta vuoto o danneggiato ($len byte): $Path" }
         [math]::Round($len / 1MB, 0)
-    }
-
-    function Invoke-ToolRun($Config, $Items) {
-        $list = @($Items)
-        $n = $list.Count
-        $results = New-Object System.Collections.Generic.List[object]
-        $mode = 'ESECUZIONE REALE'
-        if ($Config.DryRun) { $mode = 'SIMULAZIONE (nessuna modifica)' }
-        Write-ToolLog ('=== {0} {1} - {2} profili - {3}' -f $Tool.Title, $Tool.Version, $n, $mode) 'STEP'
-        foreach ($k in @($Config.Keys)) { Write-ToolLog ('  {0} = {1}' -f $k, (@($Config[$k]) -join '; ')) }
-        for ($i = 0; $i -lt $n; $i++) {
-            $item = $list[$i]
-            if ($State.Cancel) {
-                for ($j = $i; $j -lt $n; $j++) {
-                    $results.Add([pscustomobject]@{ Utente = $list[$j].Utente; SID = $list[$j].SID; Origine = $list[$j].Origine; Destinazione = ''; Esito = 'Annullato'; Messaggio = "Annullato dall'operatore"; DurataSec = 0; DimensioneMB = '' })
-                    Send-ToolMessage @{ T = 'row'; K = $list[$j].Key; E = 'Annullato' }
-                }
-                Write-ToolLog "Annullato dall'operatore: $($n - $i) profili non elaborati." 'WARN'
-                break
-            }
-            Send-ToolMessage @{ T = 'prog'; C = $i; N = $n; M = ('{0}/{1} {2}' -f ($i + 1), $n, $item.Utente) }
-            Write-ToolLog ('--- [{0}/{1}] {2} ({3})' -f ($i + 1), $n, $item.Utente, $item.SID) 'STEP'
-            $sw = [System.Diagnostics.Stopwatch]::StartNew()
-            $r = @{ Esito = 'Fallito'; Messaggio = ''; Destinazione = ''; DimensioneMB = '' }
-            try {
-                $o = Invoke-ToolItem -Config $Config -Item $item
-                foreach ($k in @($o.Keys)) { $r[$k] = $o[$k] }
-            } catch {
-                $r.Esito = 'Fallito'
-                $r.Messaggio = $_.Exception.Message
-                Write-ToolLog "Errore: $($r.Messaggio)" 'ERROR'
-            }
-            $sw.Stop()
-            $lvl = switch ($r.Esito) { 'OK' { 'OK' } 'Fallito' { 'ERROR' } 'Saltato' { 'WARN' } default { 'INFO' } }
-            $txt = $r.Esito
-            if ($r.Messaggio) { $txt += " - $($r.Messaggio)" }
-            Write-ToolLog ('{0}: {1} ({2:N0} s)' -f $item.Utente, $txt, $sw.Elapsed.TotalSeconds) $lvl
-            Send-ToolMessage @{ T = 'row'; K = $item.Key; E = $r.Esito }
-            $results.Add([pscustomobject]@{
-                Utente = $item.Utente; SID = $item.SID; Origine = $item.Origine; Destinazione = $r.Destinazione
-                Esito = $r.Esito; Messaggio = $r.Messaggio; DurataSec = [math]::Round($sw.Elapsed.TotalSeconds, 0); DimensioneMB = $r.DimensioneMB
-            })
-        }
-        $State.ReportFile = Join-Path $State.LogDir ('{0}_Report_{1}.csv' -f $Tool.Name, (Get-Date -Format 'yyyyMMdd_HHmmss'))
-        try { $results | Export-Csv -LiteralPath $State.ReportFile -NoTypeInformation -Delimiter ';' -Encoding UTF8 -ErrorAction Stop }
-        catch { Write-ToolLog "Report CSV non scritto: $($_.Exception.Message)" 'ERROR'; $State.ReportFile = $null }
-        $count = @{}
-        foreach ($e in @('OK', 'Simulato', 'Saltato', 'Fallito', 'Annullato')) { $count[$e] = @($results | Where-Object { $_.Esito -eq $e }).Count }
-        $summary = 'Totale {0} | OK {1} | Simulati {2} | Saltati {3} | Falliti {4} | Annullati {5}' -f $n, $count.OK, $count.Simulato, $count.Saltato, $count.Fallito, $count.Annullato
-        $lvl = 'OK'
-        if ($count.Fallito -gt 0) { $lvl = 'ERROR' } elseif ($count.Saltato -gt 0 -or $count.Annullato -gt 0) { $lvl = 'WARN' }
-        Write-ToolLog "=== Fine. $summary" $lvl
-        if ($State.ReportFile) { Write-ToolLog "Report: $($State.ReportFile)" }
-        Send-ToolMessage @{ T = 'done'; S = $summary; F = $count.Fallito; R = $State.ReportFile }
-        , $results.ToArray()
     }
     #endregion
 
@@ -596,8 +604,13 @@ $ToolColumns = @(
 )
 #endregion
 
-#region CONFIGURAZIONE E INTERFACCIA (identico nei migratori FSLogix)
+#region CONFIGURAZIONE E INTERFACCIA (libreria _lib/toolkit)
 . $Engine
+
+# etichette dell'interfaccia: ogni tool puo' personalizzarle in $Tool
+foreach ($kv in @{ ItemNoun = 'elementi'; ItemTab = 'Elementi'; StartLabel = 'Avvia'; RunningLabel = 'Operazione in corso'; CloseWarning = '' }.GetEnumerator()) {
+    if (-not $Tool.ContainsKey($kv.Key)) { $Tool[$kv.Key] = $kv.Value }
+}
 
 $ToolDataDir = Join-Path $env:ProgramData ('FispaTools\' + $Tool.Name)
 $DefaultConfigPath = Join-Path $ToolDataDir 'config.json'
@@ -669,7 +682,7 @@ if ($NoGui) {
     if ($errs.Count) { foreach ($e in $errs) { Write-ToolLog $e 'ERROR' }; exit 1 }
     $items = @(Get-ToolItems -Config $Config | Where-Object { $_.Selectable })
     if ($User) { $items = @($items | Where-Object { $User -contains $_.Utente }) }
-    if (-not $items.Count) { Write-ToolLog 'Nessun profilo da elaborare.' 'WARN'; exit 0 }
+    if (-not $items.Count) { Write-ToolLog "Nessun elemento da elaborare ($($Tool.ItemNoun))." 'WARN'; exit 0 }
     $res = @(Invoke-ToolRun -Config $Config -Items $items)
     if (@($res | Where-Object { $_.Esito -eq 'Fallito' }).Count) { exit 2 }
     exit 0
@@ -706,7 +719,7 @@ $form.Font = New-Object System.Drawing.Font('Segoe UI', 9)
 $tabs = New-Object System.Windows.Forms.TabControl
 $tabs.Dock = 'Fill'
 $tabCfg = New-Object System.Windows.Forms.TabPage('Configurazione')
-$tabPro = New-Object System.Windows.Forms.TabPage('Profili')
+$tabPro = New-Object System.Windows.Forms.TabPage($Tool.ItemTab)
 $tabLog = New-Object System.Windows.Forms.TabPage('Log')
 $tabs.TabPages.AddRange(@($tabCfg, $tabPro, $tabLog))
 
@@ -876,7 +889,7 @@ $btnLoad.Add_Click({
 })
 $btnDefaults.Add_Click({ if (Confirm-UI 'Ripristinare i valori predefiniti? Le modifiche non salvate vanno perse.') { Set-FormFromConfig (Get-ToolDefaultConfig) } })
 
-# ---------------------------------------------------------- scheda Profili
+# ---------------------------------------------------------- scheda elementi (analisi e selezione)
 $proBar = New-Object System.Windows.Forms.FlowLayoutPanel
 $proBar.Dock = 'Top'
 $proBar.AutoSize = $true
@@ -970,7 +983,7 @@ $btnScan.Add_Click({
     try {
         $items = @(Get-ToolItems -Config $cfg)
         Show-Items $items
-        Write-ToolLog ('Analisi completata: {0} profili trovati, {1} migrabili.' -f $items.Count, @($items | Where-Object { $_.Selectable }).Count) 'OK'
+        Write-ToolLog ('Analisi completata: {0} {1} trovati, {2} elaborabili.' -f $items.Count, $Tool.ItemNoun, @($items | Where-Object { $_.Selectable }).Count) 'OK'
     } catch {
         Write-ToolLog "Analisi non riuscita: $($_.Exception.Message)" 'ERROR'
         Show-Err "Analisi non riuscita:`n$($_.Exception.Message)"
@@ -1012,7 +1025,7 @@ $prog.Height = 16
 $runBar = New-Object System.Windows.Forms.FlowLayoutPanel
 $runBar.Dock = 'Fill'
 $runBar.Padding = New-Object System.Windows.Forms.Padding(6, 6, 6, 0)
-$btnStart = New-Object System.Windows.Forms.Button; $btnStart.Text = 'Avvia migrazione'; $btnStart.Width = 160; $btnStart.Height = 30
+$btnStart = New-Object System.Windows.Forms.Button; $btnStart.Text = $Tool.StartLabel; $btnStart.Width = 160; $btnStart.Height = 30
 $btnStart.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
 $btnCancel = New-Object System.Windows.Forms.Button; $btnCancel.Text = 'Annulla'; $btnCancel.Width = 100; $btnCancel.Height = 30; $btnCancel.Enabled = $false
 $btnOpenLog = New-Object System.Windows.Forms.Button; $btnOpenLog.Text = 'Cartella log e report'; $btnOpenLog.AutoSize = $true; $btnOpenLog.Height = 30
@@ -1102,10 +1115,10 @@ $btnStart.Add_Click({
     if ($errs.Count) { Show-Err ($errs -join "`n"); return }
     $grid.EndEdit() | Out-Null
     $items = @(foreach ($r in $grid.Rows) { if ($r.Cells['Sel'].Value -eq $true -and $r.Tag.Selectable) { $r.Tag } })
-    if (-not $items.Count) { Show-Info "Nessun profilo selezionato.`nScheda Profili: premere Analizza e spuntare i profili da migrare."; $tabs.SelectedTab = $tabPro; return }
+    if (-not $items.Count) { Show-Info "Nessun elemento selezionato.`nScheda $($Tool.ItemTab): premere Analizza e spuntare $($Tool.ItemNoun) da elaborare."; $tabs.SelectedTab = $tabPro; return }
     $mode = 'ESECUZIONE REALE'
     if ($cfg.DryRun) { $mode = 'SIMULAZIONE (nessuna modifica)' }
-    $msg = "Profili da elaborare: $($items.Count)`n"
+    $msg = "$($Tool.ItemTab) da elaborare: $($items.Count)`n"
     foreach ($k in $Tool.ConfirmKeys) { $msg += "$k : $(@($cfg[$k]) -join '; ')`n" }
     $msg += "`nModalita': $mode`n`nProcedere?"
     if (-not (Confirm-UI $msg)) { return }
@@ -1130,7 +1143,7 @@ $btnStart.Add_Click({
 $btnCancel.Add_Click({
     $State.Cancel = $true
     $btnCancel.Enabled = $false
-    Write-ToolLog "Annullamento richiesto: termino il profilo in corso e mi fermo." 'WARN'
+    Write-ToolLog "Annullamento richiesto: termino l'elemento in corso e mi fermo." 'WARN'
 })
 
 $btnOpenLog.Add_Click({ if ($State.LogDir -and (Test-Path -LiteralPath $State.LogDir)) { Start-Process explorer.exe $State.LogDir } })
@@ -1140,11 +1153,11 @@ $form.Add_FormClosing({
     if ($script:Running) {
         $e.Cancel = $true
         if ($script:CloseWhenDone) { return }
-        if (Confirm-UI "Migrazione in corso.`nInterrompere dopo il profilo in corso e chiudere?`n(Non chiudere il processo a forza: un disco potrebbe restare montato.)") {
+        if (Confirm-UI "$($Tool.RunningLabel).`nInterrompere dopo l'elemento in corso e chiudere?$($Tool.CloseWarning)") {
             $State.Cancel = $true
             $script:CloseWhenDone = $true
             $btnCancel.Enabled = $false
-            Write-ToolLog 'Chiusura richiesta: attendo la fine del profilo in corso.' 'WARN'
+            Write-ToolLog "Chiusura richiesta: attendo la fine dell'elemento in corso." 'WARN'
         }
     }
 })

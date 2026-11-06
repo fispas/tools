@@ -48,5 +48,10 @@ $Tool = @{
     Name        = 'LocalToFSLogix'
     Title       = 'Profili locali -> FSLogix'
     Version     = '2.0.0'
+    ItemNoun     = 'profili'
+    ItemTab      = 'Profili'
+    StartLabel   = 'Avvia migrazione'
+    RunningLabel = 'Migrazione in corso'
+    CloseWarning = "`n(Non chiudere il processo a forza: un disco potrebbe restare montato.)"
     ConfirmKeys = @('DestinationPath', 'VolumeType', 'SizeMB', 'DiskType', 'FolderPattern', 'ExistingDisk')
 }

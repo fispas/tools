@@ -2,14 +2,14 @@
 
 Tool e script operativi generici, eseguibili su qualunque ambiente. Nessun dato specifico di clienti: tutto è parametrizzato o auto-rilevato.
 
-Regole complete in [CLAUDE.md](CLAUDE.md). Per un nuovo tool si parte da [`_template/`](_template/).
+Regole complete in [CLAUDE.md](CLAUDE.md). Per un nuovo tool si parte da [`_template/`](_template/) (script semplice) oppure dalla libreria [`_lib/toolkit`](_lib/toolkit/) (tool con GUI configurabile, generato con `python _lib/build.py`).
 
 ## Indice
 
 ### Active Directory — [`active-directory/`](active-directory/)
 | Tool | Descrizione | Versione |
 |---|---|---|
-| _nessuno ancora_ | | |
+| [share-permissions](active-directory/share-permissions/) | Share: migrazione dei permessi da utenti a gruppi AD (RW/RO) e hardening (permessi share, ABE, cifratura), con backup e simulazione | 1.0.0 |
 
 ### Remote Desktop / Terminal Server — [`rds/`](rds/)
 | Tool | Descrizione | Versione |
