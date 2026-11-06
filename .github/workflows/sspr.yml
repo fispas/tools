@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-test:
+  build-test-package:
     runs-on: windows-latest
     defaults:
       run:
@@ -21,15 +21,51 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
+
+      - name: Sintassi installer (PowerShell 5.1)
+        shell: powershell
+        run: |
+          $errs = $null; $tok = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path 'installer\Install-FispaSSPR.ps1'), [ref]$tok, [ref]$errs)
+          if ($errs) { $errs | ForEach-Object { Write-Host "::error::riga $($_.Extent.StartLineNumber): $($_.Message)" }; exit 1 }
+          Write-Host 'Installer: sintassi OK'
+
       - name: Restore
-        run: dotnet restore tests/FispaSspr.Core.Tests/FispaSspr.Core.Tests.csproj
+        run: |
+          dotnet restore tests/FispaSspr.Core.Tests/FispaSspr.Core.Tests.csproj
+          dotnet restore src/FispaSspr.Web/FispaSspr.Web.csproj
+
       - name: Build
-        run: dotnet build tests/FispaSspr.Core.Tests/FispaSspr.Core.Tests.csproj --no-restore -c Release
+        run: |
+          dotnet build tests/FispaSspr.Core.Tests/FispaSspr.Core.Tests.csproj --no-restore -c Release
+          dotnet build src/FispaSspr.Web/FispaSspr.Web.csproj --no-restore -c Release
+
       - name: Test
         run: dotnet test tests/FispaSspr.Core.Tests/FispaSspr.Core.Tests.csproj --no-build -c Release --logger "trx;LogFileName=test-results.trx" --results-directory TestResults
+
       - name: Risultati dei test
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: sspr-test-results
           path: active-directory/sspr/TestResults
+
+      - name: Pacchetto
+        shell: powershell
+        run: |
+          $out = Join-Path $PWD 'dist'
+          dotnet publish src/FispaSspr.Web/FispaSspr.Web.csproj -c Release -r win-x64 --self-contained true -o (Join-Path $out 'app')
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Path (Join-Path $out 'schema') -Force | Out-Null
+          Copy-Item installer\Install-FispaSSPR.ps1 $out
+          Copy-Item installer\schema\* (Join-Path $out 'schema')
+          Copy-Item README.md (Join-Path $out 'LEGGIMI.md')
+          if (-not (Test-Path (Join-Path $out 'app\FispaSSPR.exe'))) { Write-Host '::error::FispaSSPR.exe mancante'; exit 1 }
+          & (Join-Path $out 'app\FispaSSPR.exe') version
+
+      - name: Pubblica pacchetto
+        uses: actions/upload-artifact@v4
+        with:
+          name: FispaSSPR-package
+          path: active-directory/sspr/dist
+          retention-days: 90

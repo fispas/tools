@@ -1,20 +1,49 @@
 # sspr — Self Service Password Reset (on-prem)
 
-> **Stato: fase 1 in corso** (motore, schema AD, cifratura, contratto API). Su richiesta, il progetto vive qui in `fispas/tools`, anche se è un'applicazione web.
+> **Versione 0.2.0** — motore, servizio web, portale utenti, pannello di amministrazione e installer guidato scritti. **Mai compilato né eseguito finora**: la prima verifica reale è la pipeline GitHub Actions, poi un'installazione di prova in laboratorio. Su richiesta, il progetto vive qui in `fispas/tools`, anche se è un'applicazione web.
+
+## Installazione rapida
+
+Fuori dall'installer serve solo questo:
+1. **Scaricare il pacchetto**: repo `fispas/tools` → *Actions* → workflow *sspr* → ultima esecuzione verde → artefatto **FispaSSPR-package** (zip). In alternativa l'installer lo scarica da solo con un token GitHub fine-grained (permesso *Actions: Read* sul repo).
+2. Estrarlo sul **server membro** che ospiterà il portale (Windows Server 2016+, non un DC) e lanciare, come amministratore con un account Domain Admins:
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File .\Install-FispaSSPR.ps1
+   ```
+3. Al termine, se si usa un nome dedicato (es. `password.contoso.local`), creare il **record DNS** CNAME verso il server.
+
+Tutto il resto lo fa la procedura, chiedendo passo passo i dati:
+
+| Passo | Cosa chiede | Cosa fa |
+|---|---|---|
+| Pacchetto e prerequisiti | Cartella/zip o token GitHub | Verifica server membro 2016+ non DC, installa RSAT se manca |
+| Schema AD | Conferma (permanente), eventuali credenziali Schema Admins | Import di `schema\FispaSSPR-Schema.ldf` con `ldifde` sullo Schema Master |
+| gMSA | Nome del gMSA, nome DNS del portale | KDS root key (con attesa di 10 ore o subito se c'è un solo DC), creazione del gMSA autorizzato solo per questo server, `Install-ADServiceAccount` + test, SPN `HTTP/` |
+| Utenti e operatori | OU abilitate (lista con caselle), gruppi esclusi, nomi dei gruppi operatori | Crea *SSPR-Admins* / *SSPR-Helpdesk*, aggiunge l'operatore corrente, deleghe minime sulle OU (reset password, `lockoutTime`, `pwdLastSet`, `tokenGroups`, attributi `fispaSspr*` confidenziali) |
+| Certificato | Esistente / CA aziendale (modello) / PFX / autofirmato, porta | Richiesta o import, permesso di lettura della chiave privata al gMSA |
+| Portale, email e SMS | Nome azienda, help desk, metodi, SMTP, gateway SMS, password compromesse | Pulsanti **Invia email di prova** e **Invia SMS di prova** |
+| Installazione | Password del backup della chiave master | Copia in `%ProgramFiles%\FispaSSPR`, ACL su `%ProgramData%\FispaSSPR`, `config.json`, chiave master DPAPI-NG verso il gMSA + backup cifrato, Registro eventi `SSPR`, diritto *Accedi come servizio*, servizio Windows come gMSA con ripristino automatico, regola firewall Dominio/Privato, avvio e verifica |
+
+Lo stato della procedura (senza segreti) è salvato in `%ProgramData%\FispaSSPR\installer-state.json`: se serve aspettare la KDS root key si chiude e si riprende. Log in `%ProgramData%\FispaSSPR\installer_*.log`.
+
+- **Aggiornamento**: rilanciare l'installer con il nuovo pacchetto; chiave master mantenuta, scelta se mantenere la configurazione modificata dal pannello.
+- **Disinstallazione**: `Install-FispaSSPR.ps1 -Uninstall` (servizio, programma, firewall; scelta se tenere dati e chiave). In AD restano gMSA, gruppi, deleghe e schema, elencati a fine operazione.
+- **Ripristino della chiave** su un nuovo server: `FispaSSPR.exe restore --sid <SID gMSA> --backup <file>` (chiede la password del backup).
+- **Accesso automatico** dai PC di dominio: aggiungere l'indirizzo del portale alla zona Intranet via GPO.
 
 ## Struttura della cartella
-| Percorso | Contenuto | Stato |
-|---|---|---|
-| `src/FispaSspr.Core` | Motore indipendente da AD e dal web: cifratura AES-GCM, TOTP, codici monouso, limiti dei tentativi, protezione degli account, policy password e password compromesse, codec degli attributi, interfacce, configurazione | Fase 1 |
-| `tests/FispaSspr.Core.Tests` | Test xUnit (vettori RFC 6238/4648, manomissioni, iniezione LDAP, account protetti...) | Fase 1 |
-| `api/openapi.yaml` | Contratto API tra interfaccia web e motore | Fase 1 |
-| `installer/schema/FispaSSPR-Schema.ldf` | Estensione dello schema AD | Fase 1 |
-| `docs/` | `schema.md`, `crypto.md`, `eventi.md` | Fase 1 |
-| `src/FispaSspr.Directory` | Implementazione AD (LDAP/Kerberos come gMSA), DPAPI-NG | Fase 2 |
-| `src/FispaSspr.Web` + `web/` | Servizio Windows (Kestrel) e interfaccia utente/amministratore | Fasi 2-3 |
-| `installer/` | Procedura guidata `Install-FispaSSPR.ps1` | Fase 4 |
+| Percorso | Contenuto |
+|---|---|
+| `src/FispaSspr.Core` | Motore indipendente da AD e dal web: cifratura AES-GCM, TOTP, codici monouso, limiti dei tentativi, protezione degli account, policy password e password compromesse, codec degli attributi, interfacce, configurazione |
+| `src/FispaSspr.Web` | Servizio Windows `FispaSSPR.exe` (Kestrel, self-contained): directory AD come gMSA, chiave master DPAPI-NG, SMTP/SMS, audit, sessioni, API, riga di comando (`init`, `restore`, `validate`, `version`) |
+| `src/FispaSspr.Web/wwwroot` | Portale utenti (`/`) e pannello di amministrazione (`/admin/`), HTML/JS senza dipendenze esterne |
+| `tests/FispaSspr.Core.Tests` | Test xUnit (vettori RFC 6238/4648, manomissioni, iniezione LDAP, account protetti...) |
+| `api/openapi.yaml` | Contratto API tra interfaccia web e motore |
+| `installer/Install-FispaSSPR.ps1` | Installazione guidata con GUI, aggiornamento, disinstallazione |
+| `installer/schema/FispaSSPR-Schema.ldf` | Estensione dello schema AD |
+| `docs/` | `schema.md`, `crypto.md`, `eventi.md` |
 
-**Build e test**: `.github/workflows/sspr.yml` compila ed esegue i test su Windows a ogni push in questa cartella; i risultati sono nella scheda *Actions* del repo. In locale: `dotnet test tests/FispaSspr.Core.Tests`.
+**Build, test e pacchetto**: `.github/workflows/sspr.yml` su Windows a ogni push in questa cartella: controllo sintattico dell'installer con il parser di PowerShell 5.1, build, test, `dotnet publish` self-contained e artefatto **FispaSSPR-package** (`app\`, `schema\`, `Install-FispaSSPR.ps1`, `LEGGIMI.md`), conservato 90 giorni.
 
 Portale on-prem per Active Directory che permette agli utenti di:
 - **reimpostare** la password dimenticata;
@@ -42,7 +71,7 @@ Ha un **pannello di amministrazione** per amministratori e help desk. Si install
 Browser (SPA statica, nessuna CDN esterna)
    |  HTTPS, API REST documentata in api/openapi.yaml
 Servizio Windows "FispaSSPR" (ASP.NET Core 8 self-contained, Kestrel)   <- gira come gMSA
-   |-- Directory      : LDAP/Kerberos verso i DC (System.DirectoryServices.Protocols)
+   |-- Directory      : LDAP firmato e sigillato (Kerberos) verso i DC (System.DirectoryServices)
    |-- Enrollment     : attributi AD fispaSspr* cifrati AES-256-GCM
    |-- OTP            : TOTP RFC 6238, codici SMS/email monouso
    |-- Notifiche      : SMTP (relay interno), SMS Gateway for Android / HTTP generico
@@ -52,7 +81,7 @@ Servizio Windows "FispaSSPR" (ASP.NET Core 8 self-contained, Kestrel)   <- gira 
 
 - **Niente IIS**: servizio Windows self-contained con Kestrel, quindi niente Hosting Bundle e niente .NET da installare. L'installer copia una cartella e registra il servizio.
 - **Intercambiabilità del motore**: la SPA parla solo con l'API (`api/openapi.yaml`). Il dominio applicativo sta dietro interfacce (`IDirectory`, `IEnrollmentStore`, `IOtpChannel`, `IAuditLog`). Schema AD, formato cifrato e configurazione sono documentati, così un backend Node.js può sostituire quello .NET senza toccare frontend, dati e installer.
-- **Cartella `active-directory/sspr`** di `fispas/tools`: `src/` (backend), `web/` (SPA), `api/` (OpenAPI), `installer/` (procedura guidata PowerShell sullo standard del repo), `docs/`, test e CI GitHub Actions.
+- **Cartella `active-directory/sspr`** di `fispas/tools`: `src/` (motore, servizio e interfaccia in `wwwroot`), `api/` (OpenAPI), `installer/` (procedura guidata PowerShell), `docs/`, test e CI GitHub Actions.
 
 ## Dati in Active Directory
 
@@ -134,23 +163,15 @@ Classe ausiliaria `fispaSsprUser` aggiunta alla classe `user`, con gli attributi
   - mai registrate nei log né inviate.
 - **Audit**: Registro eventi `SSPR` con ID documentati, utile anche alla futura dashboard di monitoraggio AD; notifiche all'utente per reset, sblocco e modifica dei metodi.
 
-## Installazione guidata (`Install-FispaSSPR.ps1`, GUI)
-
-1. Verifica dei prerequisiti: server membro 2016+, non DC, porta libera, account dell'operatore.
-2. **Schema**: verifica e, se manca, estensione con conferma (Schema Admins). In alternativa genera lo script per l'amministratore dello schema.
-3. **gMSA**: verifica della KDS root key e creazione del gMSA. Se la chiave è nuova e servono 10 ore, la procedura lo spiega e riprende più tardi.
-4. **OU abilitate e gruppi**: selezione delle OU da un albero, creazione di *SSPR-Admins* e *SSPR-Helpdesk*, deleghe e ACL sugli attributi confidenziali.
-5. **Certificato**: richiesta alla CA aziendale, import di un PFX o certificato autofirmato.
-6. **Servizio**: copia in `%ProgramFiles%\FispaSSPR`, servizio Windows come gMSA con ripristino automatico, regola firewall solo per i profili Dominio/Privato, sorgente del Registro eventi, chiave master con backup.
-7. **SMTP, SMS e aspetto**, con pulsanti di test.
-8. Avvio, verifica dello stato, apertura del portale; indirizzo da pubblicare (collegamento via GPO, link nella schermata di logon).
-
-Previsti anche aggiornamento (sostituzione dei file, configurazione invariata) e disinstallazione (servizio, deleghe, gruppi; lo schema resta, ma lo si può disattivare).
-
 ## Fasi di sviluppo
 
-1. Struttura, OpenAPI, schema AD e cifratura, motore con test. **In corso**: motore Core e test scritti, in attesa della prima esecuzione della CI.
-2. Registrazione dei metodi, cambio password, reset, sblocco.
-3. Pannello amministratori.
-4. Installer guidato, aggiornamento, disinstallazione.
-5. Documentazione utente e amministratore, pagina da distribuire agli utenti.
+1. Struttura, OpenAPI, schema AD e cifratura, motore con test. **Scritta**.
+2. Servizio, registrazione dei metodi, cambio password, reset, sblocco. **Scritta**.
+3. Pannello amministratori. **Scritta**.
+4. Installer guidato, aggiornamento, disinstallazione, pacchetto da CI. **Scritta**.
+5. Collaudo: CI verde, installazione in laboratorio, correzioni.
+6. Documentazione utente e amministratore, pagina da distribuire agli utenti.
+
+## Changelog
+- **0.2.0** — servizio web (`FispaSspr.Web`), portale utenti, pannello di amministrazione con 2FA operatori, installer guidato `Install-FispaSSPR.ps1` (gMSA, schema, deleghe, certificato, servizio), pacchetto pubblicato dalla CI.
+- **0.1.0** — motore `FispaSspr.Core`, test, schema AD, documentazione del formato cifrato e degli eventi, contratto API.

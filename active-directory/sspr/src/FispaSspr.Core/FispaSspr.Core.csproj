@@ -13,6 +13,7 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="FispaSspr.Core.Tests" />
+    <InternalsVisibleTo Include="FispaSSPR" />
   </ItemGroup>
 
 </Project>

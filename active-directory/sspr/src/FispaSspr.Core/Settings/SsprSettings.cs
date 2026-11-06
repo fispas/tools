@@ -8,6 +8,7 @@ public sealed record SsprSettings
 {
     public int ConfigVersion { get; init; } = 1;
     public GeneralSettings General { get; init; } = new();
+    public HostingSettings Hosting { get; init; } = new();
     public DirectorySettings Directory { get; init; } = new();
     public VerificationSettings Verification { get; init; } = new();
     public RateLimitSettings RateLimits { get; init; } = new();
@@ -25,6 +26,15 @@ public sealed record GeneralSettings
     public string HelpdeskContact { get; init; } = "";
     public string DefaultCountryCode { get; init; } = "39";
     public string Culture { get; init; } = "it-IT";
+}
+
+public sealed record HostingSettings
+{
+    public int Port { get; init; } = 443;
+    /// <summary>Impronta del certificato in LocalMachine\My (accesso alla chiave privata concesso al gMSA dall'installer).</summary>
+    public string CertificateThumbprint { get; init; } = "";
+    /// <summary>SID del gMSA del servizio: descrittore DPAPI-NG della chiave master.</summary>
+    public string ServiceAccountSid { get; init; } = "";
 }
 
 public sealed record DirectorySettings
@@ -103,7 +113,7 @@ public enum SmsProvider
 public sealed record SmsSettings
 {
     public SmsProvider Provider { get; init; } = SmsProvider.None;
-    /// <summary>Es. http://192.168.1.50:8080 per SMS Gateway for Android.</summary>
+    /// <summary>URL completo di invio, es. http://192.168.1.50:8080/message per SMS Gateway for Android.</summary>
     public string Endpoint { get; init; } = "";
     public string? UserName { get; init; }
     public string? PasswordEnvelope { get; init; }

@@ -1,9 +1,9 @@
 openapi: 3.0.3
 info:
   title: FispaSSPR API
-  version: 0.1.0
+  version: 0.2.0
   description: |
-    Contratto tra l'interfaccia web (web/) e il motore del portale. Qualunque backend (ASP.NET Core, Node.js)
+    Contratto tra l'interfaccia web (src/FispaSspr.Web/wwwroot) e il motore del portale. Qualunque backend (ASP.NET Core, Node.js)
     che rispetta questo contratto, lo schema AD (docs/schema.md) e il formato cifrato (docs/crypto.md) e' intercambiabile.
 
     Regole comuni:
@@ -28,6 +28,14 @@ paths:
       summary: Stato della sessione, token CSRF, utente se autenticato (autenticazione Windows o login)
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Session' } } } }
+  /session/windows:
+    get:
+      tags: [Sessione]
+      summary: Accesso con autenticazione Windows integrata (Negotiate) dai PC del dominio
+      security: [ { adminWindows: [] } ]
+      responses:
+        '200': { description: Autenticato, content: { application/json: { schema: { $ref: '#/components/schemas/Session' } } } }
+        '401': { description: Negoziazione in corso o non disponibile }
   /session/login:
     post:
       tags: [Sessione]
@@ -96,6 +104,14 @@ paths:
       requestBody: { required: true, content: { application/json: { schema: { type: object, required: [password], properties: { password: { type: string, format: password } } } } } }
       responses:
         '200': { description: Esito, content: { application/json: { schema: { $ref: '#/components/schemas/PasswordCheck' } } } }
+  /password/change/challenge:
+    post:
+      tags: [Password]
+      summary: Invia o prepara la verifica aggiuntiva richiesta per il cambio password (metodo registrato scelto)
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [methodId], properties: { methodId: { type: string } } } } } }
+      responses:
+        '204': { description: Codice inviato o TOTP pronto }
+        '429': { $ref: '#/components/responses/TooMany' }
   /password/change:
     post:
       tags: [Password]
@@ -144,6 +160,41 @@ paths:
         '400': { $ref: '#/components/responses/Problem' }
         '403': { $ref: '#/components/responses/Problem' }
 
+  /admin/2fa:
+    get:
+      tags: [Amministrazione]
+      summary: Stato del secondo fattore dell'operatore (configurato, verificato in questa sessione)
+      security: [ { adminWindows: [] } ]
+      responses: { '200': { description: OK } }
+  /admin/2fa/setup:
+    post:
+      tags: [Amministrazione]
+      summary: Prima configurazione dell'app di autenticazione dell'operatore (QR)
+      security: [ { adminWindows: [] } ]
+      responses: { '200': { description: Segreto e QR da confermare } }
+  /admin/2fa/verify:
+    post:
+      tags: [Amministrazione]
+      summary: Verifica il codice TOTP dell'operatore e sblocca il pannello per la sessione
+      security: [ { adminWindows: [] } ]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/Code' } } } }
+      responses: { '204': { description: OK }, '400': { $ref: '#/components/responses/Problem' }, '429': { $ref: '#/components/responses/TooMany' } }
+  /admin/operators/{sid}/totp/clear:
+    post:
+      tags: [Amministrazione]
+      summary: Azzera l'app di autenticazione di un altro operatore (solo Admin, motivo obbligatorio)
+      security: [ { adminWindows: [] } ]
+      parameters: [ { name: sid, in: path, required: true, schema: { type: string } } ]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/AdminReason' } } } }
+      responses: { '204': { description: OK }, '403': { $ref: '#/components/responses/Problem' } }
+  /admin/test/{channel}:
+    post:
+      tags: [Amministrazione]
+      summary: Invia un messaggio di prova (email o SMS) al destinatario indicato (solo Admin)
+      security: [ { adminWindows: [] } ]
+      parameters: [ { name: channel, in: path, required: true, schema: { type: string, enum: [email, sms] } } ]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [destination], properties: { destination: { type: string } } } } } }
+      responses: { '204': { description: Inviato }, '400': { $ref: '#/components/responses/Problem' } }
   /admin/dashboard:
     get:
       tags: [Amministrazione]
@@ -172,8 +223,8 @@ paths:
       parameters: [ { name: sid, in: path, required: true, schema: { type: string } } ]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/AdminReason' } } } }
       responses: { '204': { description: OK }, '403': { $ref: '#/components/responses/Problem' } }
-  /admin/users/{sid}/enrollment:
-    delete:
+  /admin/users/{sid}/enrollment/clear:
+    post:
       tags: [Amministrazione]
       summary: "Azzera i metodi registrati: l'utente dovra' registrarsi di nuovo (Helpdesk, Admin)"
       security: [ { adminWindows: [] } ]
