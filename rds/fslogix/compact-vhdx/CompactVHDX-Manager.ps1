@@ -42,9 +42,14 @@ if (-not $created) {
 }
 
 $script:cfg = Get-CVConfig
+if ($script:CVConfigIssue -and -not $Auto) {
+    [System.Windows.Forms.MessageBox]::Show("$script:CVConfigIssue`n`nIl pannello si apre con i valori predefiniti: ricontrollare le impostazioni prima di salvare, oppure ripristinare config.json.bak.", 'CompactVHDX', 'OK', 'Warning') | Out-Null
+}
 foreach ($d in $script:CVBase, $script:CVLogDir, $script:CVDataDir) { New-Item -ItemType Directory -Path $d -Force | Out-Null }
 if (-not (Test-Path -LiteralPath $script:CVConfig)) { Save-CVConfig $script:cfg }
 Set-CVInstallInfo
+# dopo un aggiornamento: task pianificati riallineati alle impostazioni della nuova versione
+try { [void](Update-CVTasksIfNeeded $script:cfg) } catch { Write-CVEvent 1005 "Aggiornamento dei task pianificati non riuscito: $($_.Exception.Message)" 'Warning' }
 
 # --------------------------------------------------------------------- helper UI
 $script:Font     = New-Object System.Drawing.Font('Segoe UI', 9)

@@ -14,7 +14,7 @@
 # ============================================================================
 #  Costanti e percorsi
 # ============================================================================
-$script:CVVersion   = '2.0.0'
+$script:CVVersion   = '2.1.0'
 # la cartella di installazione e' quella che contiene questa libreria: lo strumento funziona ovunque venga installato
 $script:CVBase      = if ($PSScriptRoot) { $PSScriptRoot } else { 'C:\Scripts\CompactVHDX' }
 $script:CVDefaultBase = 'C:\Scripts\CompactVHDX'
@@ -98,11 +98,35 @@ function Merge-CVObject($Default, $Loaded) {
     $out
 }
 
+function Write-CVFileAtomic([string]$Path, [string]$Text, [switch]$KeepBackup) {
+    # Scrive su un file temporaneo e lo sostituisce in un colpo solo: chi legge (pannello, job)
+    # non vede mai un file a meta', e un'interruzione non lascia un file troncato.
+    $tmp = "$Path.tmp"
+    [IO.File]::WriteAllText($tmp, $Text, (New-Object System.Text.UTF8Encoding($true)))
+    for ($i = 1; $i -le 8; $i++) {
+        try {
+            if (Test-Path -LiteralPath $Path) {
+                $bak = if ($KeepBackup) { "$Path.bak" } else { $null }
+                [IO.File]::Replace($tmp, $Path, $bak, $true)
+            } else {
+                [IO.File]::Move($tmp, $Path)
+            }
+            return
+        } catch {
+            if ($i -eq 8) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue; throw }
+            Start-Sleep -Milliseconds (100 * $i)
+        }
+    }
+}
+
+$script:CVConfigIssue = ''
+
 function Get-CVConfig {
     $def = Get-CVDefaultConfig
     if (Test-Path -LiteralPath $script:CVConfig) {
         try {
             $loaded = Get-Content -LiteralPath $script:CVConfig -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ($null -eq $loaded) { throw 'file vuoto' }
             $cfg = Merge-CVObject $def $loaded
             # migrazione dalla versione 1.x: un solo percorso in ProfilePath
             if (-not @($cfg.ProfilePaths).Count -and $loaded.PSObject.Properties.Name -contains 'ProfilePath' -and $loaded.ProfilePath) {
@@ -110,14 +134,21 @@ function Get-CVConfig {
                 $cfg.SetupDone = $true
             }
             return $cfg
-        } catch { }
+        } catch {
+            # configurazione illeggibile: se ne conserva una copia prima che un salvataggio la sovrascriva
+            $copy = '{0}.corrotto-{1}' -f $script:CVConfig, (Get-Date -Format 'yyyyMMdd-HHmmss')
+            try { Copy-Item -LiteralPath $script:CVConfig -Destination $copy -Force -ErrorAction Stop } catch { $copy = '' }
+            $script:CVConfigIssue = "config.json non leggibile ($($_.Exception.Message)). Copia conservata: $copy. Ultima versione valida, se presente: config.json.bak"
+            Write-CVEvent 1005 "CompactVHDX: $script:CVConfigIssue" 'Warning'
+        }
     }
     $def
 }
 
 function Save-CVConfig($Config) {
     New-Item -ItemType Directory -Path $script:CVBase -Force | Out-Null
-    $Config | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $script:CVConfig -Encoding UTF8
+    Write-CVFileAtomic -Path $script:CVConfig -Text ($Config | ConvertTo-Json -Depth 6) -KeepBackup
+    $script:CVConfigIssue = ''
 }
 
 # ============================================================================
@@ -212,7 +243,8 @@ function Get-CVAttachedLeftovers([string[]]$Roots) {
     if (-not $full.Count) { return @() }
     @(Get-Disk -ErrorAction SilentlyContinue | Where-Object {
         $loc = $_.Location
-        $loc -and $loc -match '\.vhdx?$' -and @($full | Where-Object { $loc -like "$_\*" }).Count
+        # confronto testuale (non -like): parentesi quadre nei percorsi non vanno interpretate come caratteri jolly
+        $loc -and $loc -match '\.vhdx?$' -and @($full | Where-Object { $loc.StartsWith("$_\", [StringComparison]::OrdinalIgnoreCase) }).Count
     })
 }
 
@@ -245,7 +277,7 @@ function Stop-CVForce([string[]]$Roots) {
     if ($st -and $st.State -in 'running', 'stopping') {
         $st.State = 'killed'
         $st.Updated = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
-        try { $st | ConvertTo-Json | Set-Content -LiteralPath $script:CVStatus -Encoding UTF8 } catch { }
+        try { Write-CVFileAtomic -Path $script:CVStatus -Text ($st | ConvertTo-Json) } catch { }
     }
     Write-CVEvent 1003 "Compattazione terminata con stop forzato. $($msgs -join ' ')" 'Warning'
     $msgs
@@ -918,7 +950,11 @@ function New-CVTaskXml {
         $limit = if ($Kind -eq 'Job') { Get-CVExecLimit $Schedule } else { 'PT24H' }
     }
 
-    [void]$sb.Append('<Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><AllowHardTerminate>true</AllowHardTerminate><StartWhenAvailable>false</StartWhenAvailable><RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable><IdleSettings><StopOnIdleEnd>false</StopOnIdleEnd><RestartOnIdle>false</RestartOnIdle></IdleSettings><AllowStartOnDemand>true</AllowStartOnDemand><Enabled>true</Enabled><Hidden>false</Hidden><RunOnlyIfIdle>false</RunOnlyIfIdle><WakeToRun>false</WakeToRun>')
+    # Job e Manuale: AllowHardTerminate=false. Ne' il limite di durata ne' "Termina" dall'Utilita' di
+    # pianificazione possono uccidere il processo a meta' disco (il disco resterebbe agganciato e
+    # l'utente non potrebbe accedere). Per fermare: Stop pulito o Stop-CompactVHDX.ps1 [-Force].
+    $hard = if ($Kind -eq 'Monitor') { 'true' } else { 'false' }
+    [void]$sb.Append("<Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><AllowHardTerminate>$hard</AllowHardTerminate><StartWhenAvailable>false</StartWhenAvailable><RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable><IdleSettings><StopOnIdleEnd>false</StopOnIdleEnd><RestartOnIdle>false</RestartOnIdle></IdleSettings><AllowStartOnDemand>true</AllowStartOnDemand><Enabled>true</Enabled><Hidden>false</Hidden><RunOnlyIfIdle>false</RunOnlyIfIdle><WakeToRun>false</WakeToRun>")
     [void]$sb.Append("<ExecutionTimeLimit>$limit</ExecutionTimeLimit><Priority>7</Priority></Settings>")
     [void]$sb.Append("<Actions Context=`"Author`"><Exec><Command>powershell.exe</Command><Arguments>$(ConvertTo-CVXml $Arguments)</Arguments><WorkingDirectory>$(ConvertTo-CVXml $script:CVBase)</WorkingDirectory></Exec></Actions>")
     [void]$sb.Append('</Task>')
@@ -951,6 +987,19 @@ function Register-CVSchedule($Config) {
     } else {
         Unregister-ScheduledTask -TaskName $script:CVTaskMonitor -Confirm:$false -ErrorAction SilentlyContinue
     }
+    try { New-Item -Path $script:CVRegKey -Force -ErrorAction Stop | Out-Null; Set-ItemProperty -Path $script:CVRegKey -Name TasksVersion -Value $script:CVVersion } catch { }
+}
+
+function Update-CVTasksIfNeeded($Config) {
+    # Dopo un aggiornamento i task esistenti hanno ancora le impostazioni della versione precedente:
+    # si registrano di nuovo con la pianificazione salvata. Restituisce $true se li ha aggiornati.
+    if (-not $Config.SetupDone) { return $false }
+    if (-not (Get-ScheduledTask -TaskName $script:CVTaskJob -ErrorAction SilentlyContinue)) { return $false }
+    $tv = ''
+    try { $tv = [string](Get-ItemProperty -Path $script:CVRegKey -Name TasksVersion -ErrorAction Stop).TasksVersion } catch { }
+    if ($tv -eq $script:CVVersion) { return $false }
+    Register-CVSchedule $Config
+    $true
 }
 
 function Start-CVManualRun([hashtable]$Options) {

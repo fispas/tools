@@ -103,6 +103,9 @@ registrazione, e a scelta anche la cartella con configurazione, log e storico.
 
 ## Regola d'oro
 
+Dalla 2.1.0 il task è protetto: l'Utilità di pianificazione non può terminarlo a forza.
+
+
 Non terminare mai il task di compattazione da Utilità di pianificazione: un disco in
 lavorazione resterebbe agganciato al server e l'utente non potrebbe accedere. Usare
 **Stop pulito** nel pannello oppure `Stop-CompactVHDX.ps1`.
@@ -119,4 +122,11 @@ lavorazione resterebbe agganciato al server e l'utente non potrebbe accedere. Us
 | `CompactVHDX-Setup.ps1` | Installatore autonomo **generato**: contiene gli altri script in base64. Dopo ogni modifica ai sorgenti va rigenerato con `Build-CompactVHDXExe.ps1 -SetupOnly` |
 
 ## Changelog
+- **2.1.0** — robustezza:
+  - i task di compattazione (pianificato e manuale) non possono più essere terminati a forza, né dal limite di durata né da *Termina* nell'Utilità di pianificazione: prima un'esecuzione lunga poteva essere uccisa a metà disco, lasciandolo agganciato. Per fermare restano *Stop pulito* e `Stop-CompactVHDX.ps1 [-Force]`;
+  - dopo un aggiornamento il pannello registra di nuovo i task con la pianificazione salvata, così le nuove impostazioni valgono anche per le installazioni esistenti;
+  - `config.json` e `status.json` scritti in modo atomico (file temporaneo + sostituzione): niente file troncati se il server si spegne durante il salvataggio, il pannello non legge mai uno stato a metà; a ogni salvataggio resta `config.json.bak`;
+  - configurazione illeggibile: se ne conserva una copia `config.json.corrotto-<data>`, il pannello avvisa invece di ripartire in silenzio dai valori predefiniti, il job si ferma con un errore chiaro;
+  - dopo ogni compattazione si verifica che il disco non sia rimasto agganciato; se lo è, detach di sicurezza ed errore esplicito se non riesce;
+  - riconoscimento dei dischi rimasti agganciati corretto anche con parentesi quadre nel percorso.
 - **2.0.0** — importato in `fispas/tools`

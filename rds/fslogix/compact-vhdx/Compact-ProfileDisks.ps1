@@ -138,7 +138,7 @@ function Write-Status([string]$State, [string]$Current = '') {
             ErrorsFile = $errFile
             Report   = $reportPath
             WhatIf   = [bool]$WhatIf
-        } | ConvertTo-Json | Set-Content -LiteralPath $script:CVStatus -Encoding UTF8
+        } | ConvertTo-Json | ForEach-Object { Write-CVFileAtomic -Path $script:CVStatus -Text $_ }
     } catch { }
 }
 
@@ -184,6 +184,7 @@ $stoppedByRequest = $false
 $results = New-Object System.Collections.Generic.List[object]
 
 try {
+    if ($script:CVConfigIssue) { throw "Configurazione non valida: $script:CVConfigIssue" }
     if (-not $Paths.Count) { throw 'Nessuna cartella dei profili configurata: completa la configurazione guidata in CompactVHDX Manager.' }
     foreach ($p in $Paths) { if (-not (Test-Path -LiteralPath $p -PathType Container)) { throw "Cartella profili non trovata: $p" } }
     if (Test-Path -LiteralPath $script:CVStopFile) {
@@ -296,6 +297,18 @@ try {
                 }
             } else {
                 $row.Esito = 'OK'
+                # verifica: il disco non deve restare agganciato al server dopo il detach
+                $img = if ($script:HasDiskImage) { Get-DiskImage -ImagePath $f.FullName -ErrorAction SilentlyContinue } else { $null }
+                if ($img -and $img.Attached) {
+                    $d = Invoke-Diskpart @("select vdisk file=`"$($f.FullName)`"", 'detach vdisk')
+                    $img = Get-DiskImage -ImagePath $f.FullName -ErrorAction SilentlyContinue
+                    if ($img -and $img.Attached) {
+                        $row.Esito = 'ERRORE: disco rimasto agganciato dopo la compattazione'
+                        Write-Issue ERRORE "${tag}: il disco e' rimasto agganciato e il detach di sicurezza non e' riuscito (codice $($d.Code)). L'utente non potra' accedere finche' non viene sganciato."
+                    } else {
+                        Write-Issue AVVISO "${tag}: disco rimasto agganciato dopo diskpart, sganciato con detach di sicurezza"
+                    }
+                }
             }
 
             $row.AfterMB = [math]::Round((Get-Item -LiteralPath $f.FullName -Force).Length / 1MB)
@@ -400,8 +413,8 @@ try {
     else { Write-CVEvent 1001 $msg }
 
     # email
-    $issues = [bool]($fatal -or $cnt.Errors -or $alert -or $stopReason -eq 'manuale')
-    if ($cfg.Mail.Enabled -and -not $WhatIf -and (-not $cfg.Mail.OnlyOnIssues -or $issues)) {
+    $hasIssues = [bool]($fatal -or $cnt.Errors -or $alert -or $stopReason -eq 'manuale')
+    if ($cfg.Mail.Enabled -and -not $WhatIf -and (-not $cfg.Mail.OnlyOnIssues -or $hasIssues)) {
         try {
             $esito = if ($fatal -or $cnt.Errors) { 'ERRORI' } elseif ($alert) { 'ATTENZIONE' } else { 'OK' }
             $subject = "[CompactVHDX] $env:COMPUTERNAME - $esito - recuperati $('{0:N0}' -f [double]$cnt.SavedMB) MB"
