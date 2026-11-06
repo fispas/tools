@@ -9,8 +9,8 @@
     Roaming tramite Robocopy, imposta le chiavi di registro necessarie e i permessi NTFS.
 
 .NOTES
-    Autore: Utente Ricca IT
-    Ultima modifica: 2026-06-23
+    Versione: 1.1.0
+    Repo:     fispas/tools (rds/fslogix/roaming-to-fslogix)
 #>
 
 # Requires -RunAsAdministrator
@@ -54,7 +54,7 @@ try {
 
 # Selezione GUI Sorgente
 Write-Host "In attesa di selezione della cartella sorgente (Roaming Profiles)..." -ForegroundColor Yellow
-$roamingroot = Get-FolderViaGUI -Description "1/2 - Seleziona la cartella SORGENTE dei profili Roaming (es. \\Server\Profili$)"
+$roamingroot = Get-FolderViaGUI -Description "1/2 - Seleziona la cartella SORGENTE dei profili Roaming (es. \\SRV01\Profili$)"
 
 # 3. Test selezione sorgente
 if (-not $roamingroot -or -not (Test-Path $roamingroot)) {
@@ -64,7 +64,7 @@ if (-not $roamingroot -or -not (Test-Path $roamingroot)) {
 
 # Selezione GUI Destinazione
 Write-Host "In attesa di selezione della cartella di destinazione (FSLogix)..." -ForegroundColor Yellow
-$fslogixroot = Get-FolderViaGUI -Description "2/2 - Seleziona la cartella di DESTINAZIONE FSLogix (es. \\Server\FSLogix$)"
+$fslogixroot = Get-FolderViaGUI -Description "2/2 - Seleziona la cartella di DESTINAZIONE FSLogix (es. \\SRV01\FSLogix$)"
 
 # 4. Test selezione destinazione
 if (-not $fslogixroot) {

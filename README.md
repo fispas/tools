@@ -14,9 +14,9 @@ Regole complete in [CLAUDE.md](CLAUDE.md). Per un nuovo tool si parte da [`_temp
 ### Remote Desktop / Terminal Server — [`rds/`](rds/)
 | Tool | Descrizione | Versione |
 |---|---|---|
-| [fslogix/roaming-to-fslogix](rds/fslogix/roaming-to-fslogix/) | Migra profili Roaming (.V6) in VHDX FSLogix, con GUI e selezione utenti | 1.0.1 |
-| [fslogix/upd-to-fslogix](rds/fslogix/upd-to-fslogix/) | Migra User Profile Disk (UPD) in VHDX FSLogix, originali intatti | 1.0.1 |
-| [fslogix/local-to-fslogix](rds/fslogix/local-to-fslogix/) | Migra profili locali (C:\Users) in VHDX FSLogix tramite frx.exe, GUI portable | 1.0.1 |
+| [fslogix/roaming-to-fslogix](rds/fslogix/roaming-to-fslogix/) | Migra profili Roaming (.V6) in VHDX FSLogix, con GUI e selezione utenti | 1.1.0 |
+| [fslogix/upd-to-fslogix](rds/fslogix/upd-to-fslogix/) | Migra User Profile Disk (UPD) in VHDX FSLogix, originali intatti | 1.1.0 |
+| [fslogix/local-to-fslogix](rds/fslogix/local-to-fslogix/) | Migra profili locali (C:\Users) in VHDX FSLogix tramite frx.exe, GUI portable | 1.1.0 |
 
 ### Windows — [`windows/`](windows/)
 | Tool | Descrizione | Versione |

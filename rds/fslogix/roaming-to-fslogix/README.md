@@ -1,3 +1,5 @@
+# roaming-to-fslogix — Profili Roaming → FSLogix
+
 Questo strumento è uno script PowerShell basato su interfaccia grafica (GUI) progettato per semplificare e automatizzare la migrazione massiva dei profili utente Windows dal formato Roaming (es. condivisioni di rete con cartelle `.V6`) al formato VHDX nativo di FSLogix.
 
 ## 🚀 Caratteristiche Principali
@@ -57,9 +59,6 @@ Al termine, lo script stamperà un report statistico con il numero di migrazioni
 * **Utenti Disconnessi:** È caldamente consigliato eseguire la migrazione quando gli utenti target *non* sono connessi, per evitare che `Robocopy` trovi file bloccati (es. `NTUSER.DAT` in uso).
 * **Gestione Errori:** In caso di errore critico durante la copia, il blocco `finally` assicura che il disco VHDX venga comunque smontato per non lasciare partizioni "fantasma" appese al server di management.
 
----
-
-*Autore: Area Tecnica - Ricca IT*
-
 ## Changelog
 - **1.0.1** — importato in `fispas/tools` dal repo `fispas/fslogix-RoamingProfile-migrator`; script rinominato secondo convenzione; rimossi i delimitatori markdown (```powershell) a inizio/fine file che impedivano l'esecuzione
+- **1.1.0** — rimossi riferimenti aziendali dall'header, esempi di percorso neutri (`\\SRV01\...`)

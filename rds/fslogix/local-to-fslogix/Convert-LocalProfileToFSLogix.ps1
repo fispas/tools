@@ -1,3 +1,22 @@
+<#
+.SYNOPSIS
+    Migra profili locali Windows (C:\Users) in contenitori VHDX FSLogix, con GUI.
+
+.DESCRIPTION
+    GUI portable (Windows Forms) per selezionare i profili locali, creare per ciascuno
+    un VHDX FSLogix tramite frx.exe (copy-profile), assegnare owner e permessi NTFS
+    all'utente nella cartella <SID>_<Utente>. Il percorso di installazione di FSLogix
+    viene letto dal registro (HKLM:\SOFTWARE\FSLogix\Apps), con fallback sul percorso
+    standard. Log in $env:TEMP\FSLogixMigration.
+
+.EXAMPLE
+    .\Convert-LocalProfileToFSLogix.ps1
+
+.NOTES
+    Versione: 1.1.0
+    Repo:     fispas/tools (rds/fslogix/local-to-fslogix)
+    Richiede: amministratore, FSLogix Apps installato sulla macchina
+#>
 # Requires -RunAsAdministrator
 
 Add-Type -AssemblyName System.Windows.Forms
@@ -10,12 +29,13 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
 }
 
 # 2. Configurazione Log
-$logDirectory = "C:\temp"
+$logDirectory = Join-Path $env:TEMP "FSLogixMigration"
 if (-not (Test-Path -Path $logDirectory)) { New-Item -Path $logDirectory -ItemType Directory -Force | Out-Null }
 $global:logFile = Join-Path -Path $logDirectory -ChildPath "FSLogix_Migration_Log_$(Get-Date -Format 'yyyyMMdd_HHmmss').txt"
 
 # 3. Controllo pre-requisito critico (frx.exe)
-$fslogixAppPath = "C:\Program Files\fslogix\apps"
+$fslogixAppPath = (Get-ItemProperty -Path "HKLM:\SOFTWARE\FSLogix\Apps" -Name InstallPath -ErrorAction SilentlyContinue).InstallPath
+if (-not $fslogixAppPath) { $fslogixAppPath = Join-Path $env:ProgramFiles "FSLogix\Apps" }
 if (-not (Test-Path -Path (Join-Path $fslogixAppPath "frx.exe"))) {
     [System.Windows.Forms.MessageBox]::Show("Eseguibile frx.exe non trovato in $fslogixAppPath. FSLogix deve essere installato su questo server.", "Errore FSLogix", 0, [System.Windows.Forms.MessageBoxIcon]::Error)
     Exit
@@ -68,7 +88,7 @@ $form.Controls.Add($lblDest)
 $txtDest = New-Object System.Windows.Forms.TextBox
 $txtDest.Location = New-Object System.Drawing.Point(10, 85)
 $txtDest.Size = New-Object System.Drawing.Size(500, 20)
-$txtDest.Text = "E:\profili"
+$txtDest.Text = ""
 $form.Controls.Add($txtDest)
 
 $btnDest = New-Object System.Windows.Forms.Button
@@ -154,6 +174,10 @@ $btnMigrate.Add_Click({
     
     if ($checkedListBox.CheckedItems.Count -eq 0) {
         Write-Log "Nessun profilo selezionato."
+        return
+    }
+    if ([string]::IsNullOrWhiteSpace($txtDest.Text)) {
+        Write-Log "Specificare la cartella di destinazione FSLogix."
         return
     }
 

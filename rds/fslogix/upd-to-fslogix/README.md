@@ -1,4 +1,4 @@
-# Migrazione UPD a FSLogix - Documentazione
+# upd-to-fslogix — User Profile Disk → FSLogix
 
 Questo script automatizza e mette in sicurezza la transizione dei profili utente dal vecchio formato UPD (User Profile Disk) alla struttura e ai requisiti nativi di FSLogix.
 
@@ -50,3 +50,4 @@ Lo script è progettato per non bloccarsi o corrompere i dati in caso di imprevi
 
 ## Changelog
 - **1.0.1** — importato in `fispas/tools` dal repo `fispas/fslogix-UPD-profile-migrator`; script rinominato secondo convenzione
+- **1.1.0** — rimossi riferimenti aziendali dall'header, esempi di percorso neutri (`\\SRV01\...`)

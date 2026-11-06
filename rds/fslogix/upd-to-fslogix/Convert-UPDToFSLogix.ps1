@@ -6,8 +6,8 @@
     di origine e destinazione. Utilizza Out-GridView per la selezione degli utenti.
     Copia il VHDX UPD, ne sposta il contenuto e imposta i permessi NTFS.
 .NOTES
-    Autore: Utente Ricca IT
-    Ultima modifica: 2026-06-23
+    Versione: 1.1.0
+    Repo:     fispas/tools (rds/fslogix/upd-to-fslogix)
 #>
 
 # Test dei privilegi di amministratore
@@ -42,7 +42,7 @@ Write-Host "`n=== Conversione profili UPD → FSLogix ===`n" -ForegroundColor Cy
 
 # 1. Selezione GUI Sorgente
 Write-Host "In attesa di selezione della cartella sorgente (UPD)..." -ForegroundColor Yellow
-$updroot = Get-FolderViaGUI -Description "1/2 - Seleziona la cartella SORGENTE dei profili UPD (es. P:\ProfiliUPD)"
+$updroot = Get-FolderViaGUI -Description "1/2 - Seleziona la cartella SORGENTE dei profili UPD (es. \\SRV01\UPD$)"
 
 # Test selezione sorgente
 if (-not $updroot -or -not (Test-Path $updroot)) {
@@ -52,7 +52,7 @@ if (-not $updroot -or -not (Test-Path $updroot)) {
 
 # 2. Selezione GUI Destinazione
 Write-Host "In attesa di selezione della cartella di destinazione (FSLogix)..." -ForegroundColor Yellow
-$fslogixroot = Get-FolderViaGUI -Description "2/2 - Seleziona la cartella di DESTINAZIONE FSLogix (es. P:\ProfiliFSL)"
+$fslogixroot = Get-FolderViaGUI -Description "2/2 - Seleziona la cartella di DESTINAZIONE FSLogix (es. \\SRV01\FSLogix$)"
 
 # Test selezione destinazione
 if (-not $fslogixroot) {
