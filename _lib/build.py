@@ -17,6 +17,8 @@ TOOLS = {
         (f'{FSL}/roaming_head.ps1', [f'{FSL}/fslogix_engine.ps1', f'{FSL}/roaming_engine.ps1'], f'{FSL}/roaming_gui.ps1'),
     'rds/fslogix/local-to-fslogix/Convert-LocalProfileToFSLogix.ps1':
         (f'{FSL}/local_head.ps1', [f'{FSL}/fslogix_engine.ps1', f'{FSL}/local_engine.ps1'], f'{FSL}/local_gui.ps1'),
+    'active-directory/ad-hardening/Invoke-ADAssessment.ps1':
+        ('active-directory/ad-hardening/_src/head.ps1', ['active-directory/ad-hardening/_src/engine.ps1'], 'active-directory/ad-hardening/_src/gui.ps1'),
     'active-directory/share-permissions/Set-SharePermissions.ps1':
         ('active-directory/share-permissions/_src/head.ps1', ['active-directory/share-permissions/_src/engine.ps1'], 'active-directory/share-permissions/_src/gui.ps1'),
 }

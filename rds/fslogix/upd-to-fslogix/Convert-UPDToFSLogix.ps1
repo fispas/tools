@@ -60,18 +60,20 @@ $Tool = @{
 #region AVVIO (libreria _lib/toolkit)
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 $isSta = [System.Threading.Thread]::CurrentThread.GetApartmentState() -eq 'STA'
-if (-not $NoGui -and (-not $isAdmin -or -not $isSta)) {
+# $Tool.RequiresAdmin = $false per i tool in sola lettura che funzionano anche da utente standard
+$needAdmin = -not ($Tool.ContainsKey('RequiresAdmin') -and -not $Tool.RequiresAdmin)
+if (-not $NoGui -and ((-not $isAdmin -and $needAdmin) -or -not $isSta)) {
     $argList = @('-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"")
     if ($ConfigPath) { $argList += @('-ConfigPath', "`"$ConfigPath`"") }
     try {
-        if ($isAdmin) { Start-Process -FilePath powershell.exe -ArgumentList $argList }
+        if ($isAdmin -or -not $needAdmin) { Start-Process -FilePath powershell.exe -ArgumentList $argList }
         else { Start-Process -FilePath powershell.exe -ArgumentList $argList -Verb RunAs }
     } catch {
         Write-Error "Avvio come amministratore annullato o non riuscito: $($_.Exception.Message)"
     }
     return
 }
-if (-not $isAdmin) {
+if (-not $isAdmin -and $needAdmin) {
     Write-Error 'Servono i privilegi di amministratore: aprire PowerShell come amministratore.'
     exit 1
 }
@@ -196,6 +198,7 @@ public static extern bool GetDiskFreeSpaceEx(string lpDirectoryName, out ulong l
         $results = New-Object System.Collections.Generic.List[object]
         $mode = 'ESECUZIONE REALE'
         if ($Config.DryRun) { $mode = 'SIMULAZIONE (nessuna modifica)' }
+        if ($Tool.ReadOnly) { $mode = 'SOLA LETTURA' }
         Write-ToolLog ('=== {0} {1} - {2} {3} - {4}' -f $Tool.Title, $Tool.Version, $n, $Tool.ItemNoun, $mode) 'STEP'
         foreach ($k in @($Config.Keys)) { Write-ToolLog ('  {0} = {1}' -f $k, (@($Config[$k]) -join '; ')) }
         for ($i = 0; $i -lt $n; $i++) {
@@ -221,7 +224,7 @@ public static extern bool GetDiskFreeSpaceEx(string lpDirectoryName, out ulong l
                 Write-ToolLog "Errore: $($r.Messaggio)" 'ERROR'
             }
             $sw.Stop()
-            $lvl = switch ($r.Esito) { 'OK' { 'OK' } 'Fallito' { 'ERROR' } 'Saltato' { 'WARN' } default { 'INFO' } }
+            $lvl = switch ($r.Esito) { 'OK' { 'OK' } 'Fallito' { 'ERROR' } 'Critico' { 'ERROR' } 'Saltato' { 'WARN' } 'Attenzione' { 'WARN' } default { 'INFO' } }
             $txt = $r.Esito
             if ($r.Messaggio) { $txt += " - $($r.Messaggio)" }
             Write-ToolLog ('{0}: {1} ({2:N0} s)' -f $item.Utente, $txt, $sw.Elapsed.TotalSeconds) $lvl
@@ -229,19 +232,30 @@ public static extern bool GetDiskFreeSpaceEx(string lpDirectoryName, out ulong l
             $results.Add([pscustomobject]@{
                 Utente = $item.Utente; SID = $item.SID; Origine = $item.Origine; Destinazione = $r.Destinazione
                 Esito = $r.Esito; Messaggio = $r.Messaggio; DurataSec = [math]::Round($sw.Elapsed.TotalSeconds, 0); DimensioneMB = $r.DimensioneMB
+                Dati = $r['Dati']
             })
         }
         $State.ReportFile = Join-Path $State.LogDir ('{0}_Report_{1}.csv' -f $Tool.Name, (Get-Date -Format 'yyyyMMdd_HHmmss'))
-        try { $results | Export-Csv -LiteralPath $State.ReportFile -NoTypeInformation -Delimiter ';' -Encoding UTF8 -ErrorAction Stop }
+        try { $results | Select-Object -Property * -ExcludeProperty Dati | Export-Csv -LiteralPath $State.ReportFile -NoTypeInformation -Delimiter ';' -Encoding UTF8 -ErrorAction Stop }
         catch { Write-ToolLog "Report CSV non scritto: $($_.Exception.Message)" 'ERROR'; $State.ReportFile = $null }
+        # report aggiuntivo del tool (es. HTML), se il tool definisce Complete-ToolRun
+        if (Get-Command Complete-ToolRun -CommandType Function -ErrorAction SilentlyContinue) {
+            try {
+                $extra = Complete-ToolRun -Config $Config -Results $results.ToArray()
+                if ($extra) { $State.ReportFile = [string]@($extra)[-1] }
+            } catch { Write-ToolLog "Report finale non generato: $($_.Exception.Message)" 'ERROR' }
+        }
         $count = @{}
-        foreach ($e in @('OK', 'Simulato', 'Saltato', 'Fallito', 'Annullato')) { $count[$e] = @($results | Where-Object { $_.Esito -eq $e }).Count }
-        $summary = 'Totale {0} | OK {1} | Simulati {2} | Saltati {3} | Falliti {4} | Annullati {5}' -f $n, $count.OK, $count.Simulato, $count.Saltato, $count.Fallito, $count.Annullato
+        foreach ($g in @($results | Group-Object Esito)) { $count[$g.Name] = $g.Count }
+        $parts = @("Totale $n")
+        foreach ($e in @('OK', 'Simulato', 'Info', 'Attenzione', 'Critico', 'Non verificato', 'Saltato', 'Fallito', 'Annullato')) { if ($count[$e]) { $parts += "$e $($count[$e])" } }
+        $summary = $parts -join ' | '
+        if (-not $count['Fallito']) { $count['Fallito'] = 0 }
         $lvl = 'OK'
-        if ($count.Fallito -gt 0) { $lvl = 'ERROR' } elseif ($count.Saltato -gt 0 -or $count.Annullato -gt 0) { $lvl = 'WARN' }
+        if ($count['Fallito'] -gt 0 -or $count['Critico'] -gt 0) { $lvl = 'ERROR' } elseif ($count['Saltato'] -or $count['Annullato'] -or $count['Attenzione']) { $lvl = 'WARN' }
         Write-ToolLog "=== Fine. $summary" $lvl
         if ($State.ReportFile) { Write-ToolLog "Report: $($State.ReportFile)" }
-        Send-ToolMessage @{ T = 'done'; S = $summary; F = $count.Fallito; R = $State.ReportFile }
+        Send-ToolMessage @{ T = 'done'; S = $summary; F = $count['Fallito']; R = $State.ReportFile }
         , $results.ToArray()
     }
     #endregion
@@ -1063,7 +1077,9 @@ function Receive-ToolMessage($Msg) {
                     $r.Cells['Esito'].Style.ForeColor = switch ($Msg.E) {
                         'OK' { [System.Drawing.Color]::DarkGreen }
                         'Fallito' { [System.Drawing.Color]::Firebrick }
+                        'Critico' { [System.Drawing.Color]::Firebrick }
                         'Saltato' { [System.Drawing.Color]::DarkOrange }
+                        'Attenzione' { [System.Drawing.Color]::DarkOrange }
                         'Simulato' { [System.Drawing.Color]::RoyalBlue }
                         default { [System.Drawing.Color]::Gray }
                     }
@@ -1118,6 +1134,7 @@ $btnStart.Add_Click({
     if (-not $items.Count) { Show-Info "Nessun elemento selezionato.`nScheda $($Tool.ItemTab): premere Analizza e spuntare $($Tool.ItemNoun) da elaborare."; $tabs.SelectedTab = $tabPro; return }
     $mode = 'ESECUZIONE REALE'
     if ($cfg.DryRun) { $mode = 'SIMULAZIONE (nessuna modifica)' }
+    if ($Tool.ReadOnly) { $mode = 'SOLA LETTURA (nessuna modifica)' }
     $msg = "$($Tool.ItemTab) da elaborare: $($items.Count)`n"
     foreach ($k in $Tool.ConfirmKeys) { $msg += "$k : $(@($cfg[$k]) -join '; ')`n" }
     $msg += "`nModalita': $mode`n`nProcedere?"

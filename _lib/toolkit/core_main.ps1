@@ -458,7 +458,9 @@ function Receive-ToolMessage($Msg) {
                     $r.Cells['Esito'].Style.ForeColor = switch ($Msg.E) {
                         'OK' { [System.Drawing.Color]::DarkGreen }
                         'Fallito' { [System.Drawing.Color]::Firebrick }
+                        'Critico' { [System.Drawing.Color]::Firebrick }
                         'Saltato' { [System.Drawing.Color]::DarkOrange }
+                        'Attenzione' { [System.Drawing.Color]::DarkOrange }
                         'Simulato' { [System.Drawing.Color]::RoyalBlue }
                         default { [System.Drawing.Color]::Gray }
                     }
@@ -513,6 +515,7 @@ $btnStart.Add_Click({
     if (-not $items.Count) { Show-Info "Nessun elemento selezionato.`nScheda $($Tool.ItemTab): premere Analizza e spuntare $($Tool.ItemNoun) da elaborare."; $tabs.SelectedTab = $tabPro; return }
     $mode = 'ESECUZIONE REALE'
     if ($cfg.DryRun) { $mode = 'SIMULAZIONE (nessuna modifica)' }
+    if ($Tool.ReadOnly) { $mode = 'SOLA LETTURA (nessuna modifica)' }
     $msg = "$($Tool.ItemTab) da elaborare: $($items.Count)`n"
     foreach ($k in $Tool.ConfirmKeys) { $msg += "$k : $(@($cfg[$k]) -join '; ')`n" }
     $msg += "`nModalita': $mode`n`nProcedere?"

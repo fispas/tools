@@ -1,6 +1,64 @@
 # ad-hardening — Fotografia e hardening di Active Directory
 
-> **Stato: progetto in definizione.** Questo file raccoglie linee guida e decisioni. Il codice arriva per fasi.
+> **Stato:** fase 1 (fotografia) in sviluppo, versione 0.1.0 con 28 controlli. Fasi 2 e 3 da fare. Questo file raccoglie anche linee guida e decisioni.
+
+## Uso della fase 1 — `Invoke-ADAssessment.ps1`
+
+```powershell
+.\Invoke-ADAssessment.ps1                       # GUI: Configurazione -> Controlli -> Analizza -> Esegui i controlli
+.\Invoke-ADAssessment.ps1 -NoGui                # tutti i controlli con la configurazione salvata
+.\Invoke-ADAssessment.ps1 -NoGui -User K-ASREP-01,K-DEL-01
+```
+- **Sola lettura**: non modifica nulla. Funziona da un utente di dominio standard, senza moduli aggiuntivi (LDAP/ADSI). I controlli che richiedono più privilegi, come i servizi sui DC, risultano *Non verificato*.
+- **Output** in `%ProgramData%\FispaTools\ADAssessment\Report`:
+  - `ADAssessment_<dominio>_<data>.html`: punteggio, riepilogo per categoria, controlli ordinati per gravità, remediation, evidenze;
+  - `.json` completo;
+  - `_controlli.csv` e `_evidenze.csv`.
+- **Punteggio**: 100 meno i punti di rischio. Un *Critico* vale il peso pieno del controllo, un *Attenzione* metà.
+
+| ID | Controllo |
+|---|---|
+| H-DC-01 | Domain controller e sistemi operativi |
+| H-FL-01 | Livello funzionale di dominio e foresta |
+| H-SYSVOL-01 | Replica SYSVOL: DFSR o FRS (stato della migrazione) |
+| H-BIN-01 | Cestino AD |
+| H-FSMO-01 | Ruoli FSMO |
+| P-ADM-01 | Membri dei gruppi privilegiati (ricorsivi), Schema Admins, Operators |
+| P-KRB-01 | Età della password di krbtgt |
+| P-ADM-02 | Administrator integrato |
+| P-ADC-01 | adminCount orfani |
+| P-SENS-01 | Admin delegabili e fuori da Protected Users |
+| P-PU-01 | Gruppo Protected Users |
+| K-SPN-01 | Account utente con SPN (kerberoasting) |
+| K-ASREP-01 | Preautenticazione Kerberos disattivata |
+| K-DEL-01 | Delega non vincolata |
+| K-DES-01 | Cifratura DES |
+| W-POL-01 | Policy delle password di dominio |
+| W-NREQ-01 | Password non obbligatoria |
+| W-REV-01 | Cifratura reversibile |
+| W-NEXP-01 | Password che non scadono |
+| W-INACT-01 | Utenti inutilizzati |
+| W-COMP-01 | Computer obsoleti o inattivi |
+| C-MAQ-01 | MachineAccountQuota |
+| C-PRE2K-01 | Accesso compatibile pre-Windows 2000 |
+| C-LAPS-01 | LAPS (Windows e legacy): schema e copertura |
+| C-GMSA-01 | KDS root key e gMSA |
+| C-GPP-01 | Password nelle GPP (cpassword) in SYSVOL |
+| C-TRUST-01 | Trust e SID filtering |
+| C-SPOOL-01 | Print Spooler sui DC |
+
+Prossimi controlli della fase 1:
+- replica AD e backlog DFSR;
+- DNS;
+- ADCS (ESC1–ESC8);
+- ACL su dominio e AdminSDHolder (DCSync);
+- GPO (permessi, GPO vuote o non collegate);
+- NTLM / LDAP signing / SMB signing / SMBv1;
+- audit policy effettiva;
+- logon degli account Tier 0;
+- confronto tra due fotografie.
+
+Sviluppo: sorgenti in `_src/` (controlli in `engine.ps1`, funzione `Get-AdChecks`), file generato con `python _lib/build.py`.
 
 Tool per fotografare lo stato di sicurezza e salute di un dominio Active Directory, nello stile di PingCastle e Purple Knight, e applicare le best practice di hardening in modo guidato e reversibile. Alla fine produce anche la documentazione.
 
@@ -83,3 +141,6 @@ Report Word sullo schema dell'"Analisi Healthcheck Active Directory" già in uso
   - la decisione di settembre era "solo analisi, nessuna remediation", ora superata dalla fase 2. Va deciso se la fase 2 resta nello stesso tool o diventa un tool separato (`ad-hardening-apply`);
   - lingua del report HTML (italiano; inglese in seguito?);
   - soglie di punteggio e pesi: allineati a PingCastle o propri.
+
+## Changelog
+- **0.1.0** — fase 1: 28 controlli in sola lettura, report HTML / JSON / CSV, punteggio, GUI e `-NoGui`.
