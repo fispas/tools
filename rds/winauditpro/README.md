@@ -32,7 +32,7 @@ Si apre il **pannello**:
 ```powershell
 .\Invoke-WinAuditPro.ps1 -NoGui                                  # audit completo con la config salvata
 .\Invoke-WinAuditPro.ps1 -Action AuditJson -OutputPath D:\Audit
-.\Invoke-WinAuditPro.ps1 -Action Report -JsonPath D:\Audit\SRV01_AuditData_20260101_120000.json
+.\Invoke-WinAuditPro.ps1 -Action Report -JsonPath D:\Audit\TS_AuditData_SRV01_20260101_120000.json
 .\Invoke-WinAuditPro.ps1 -Action DryRun
 .\Invoke-WinAuditPro.ps1 -Action Compare -BaselinePath .\a.json -CurrentPath .\b.json
 .\Invoke-WinAuditPro.ps1 -Console                                # menu testuale della 2.0
@@ -52,7 +52,7 @@ Codici di uscita: `0` ok, `1` errore. Utile come operazione pianificata (audit p
 I parametri `-OutputPath` e `-CmdletTimeoutSec` sulla riga di comando hanno la precedenza sulla configurazione.
 
 ## Output
-- `<output>\<server>_AuditData_<data>.json` e `<server>_Report_<data>.html`
+- `<output>\<ruolo>_AuditData_<server>_<data>.json` e `<ruolo>_Report_<server>_<data>.html`
 - `<output>\audit_<server>_<data>.log`
 - `<output>\optimizations_state.json` (+ `.bak`): stato delle ottimizzazioni e snapshot per il revert
 
