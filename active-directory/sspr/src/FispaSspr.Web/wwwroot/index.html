@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Password</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <link rel="stylesheet" href="/theme.css" id="theme">
+  <script src="/js/api.js" defer></script>
+  <script src="/js/portal.js" defer></script>
+</head>
+<body class="loading">
+<header>
+  <img id="logo" class="hidden" alt="">
+  <span class="title"><span class="company"></span> <span class="portal-title hidden"></span></span>
+  <span class="user" id="who"></span>
+</header>
+<div id="announcement" class="announcement hidden" role="status"></div>
+<main>
+
+  <section id="v-home" data-view class="card">
+    <h1 data-t="home.title"></h1>
+    <p class="muted" data-t="home.subtitle"></p>
+    <p class="tagline muted hidden"></p>
+    <div class="choices">
+      <button class="choice" data-go="reset" data-feature="reset"><b data-t="home.reset.title"></b><span class="muted" data-t="home.reset.text"></span></button>
+      <button class="choice" data-go="unlock" data-feature="unlock"><b data-t="home.unlock.title"></b><span class="muted" data-t="home.unlock.text"></span></button>
+      <button class="choice" data-go="account" data-feature="account"><b data-t="home.account.title"></b><span class="muted" data-t="home.account.text"></span></button>
+    </div>
+  </section>
+
+  <section id="v-login" data-view class="card hidden">
+    <h1 data-t="login.title"></h1>
+    <p class="muted" data-t="login.subtitle" data-feature="windowsLogin"></p>
+    <button class="btn" id="btn-win" data-t="login.windows" data-feature="windowsLogin"></button>
+    <form id="f-login" autocomplete="on" data-feature="passwordLogin">
+      <label for="l-user" data-t="login.user"></label>
+      <input id="l-user" name="username" autocomplete="username" maxlength="256" required>
+      <label for="l-pwd" data-t="login.password"></label>
+      <input id="l-pwd" type="password" autocomplete="current-password" maxlength="256" required>
+      <button class="btn" type="submit" data-t="login.submit"></button>
+    </form>
+    <button class="btn secondary" type="button" data-go="home" data-t="ui.back"></button>
+  </section>
+
+  <section id="v-account" data-view class="hidden">
+    <div class="card" id="card-methods">
+      <h1 data-t="enroll.title"></h1>
+      <p class="muted" id="enroll-info"></p>
+      <div id="methods"></div>
+      <div id="add-methods"></div>
+    </div>
+    <div class="card" id="card-change">
+      <h2 data-t="change.title"></h2>
+      <form id="f-change">
+        <label for="c-cur" data-t="change.current"></label>
+        <input id="c-cur" type="password" autocomplete="current-password" maxlength="256" required>
+        <label for="c-new" data-t="change.new"></label>
+        <input id="c-new" type="password" autocomplete="new-password" maxlength="256" required>
+        <ul class="req" id="c-req"></ul>
+        <label for="c-new2" data-t="change.repeat"></label>
+        <input id="c-new2" type="password" autocomplete="new-password" maxlength="256" required>
+        <button class="btn" type="submit" data-t="change.submit"></button>
+      </form>
+    </div>
+    <button class="btn secondary" id="btn-logout" data-t="ui.logout"></button>
+  </section>
+
+  <section id="v-stepup" data-view class="card hidden">
+    <h1 data-t="stepup.title"></h1>
+    <p class="muted" data-t="stepup.text"></p>
+    <form id="f-stepup">
+      <label for="su-method" data-t="stepup.method"></label>
+      <select id="su-method"></select>
+      <button class="btn secondary small" type="button" id="su-send" data-t="stepup.send"></button>
+      <p class="muted" id="su-sent"></p>
+      <label for="su-code" data-t="stepup.code"></label>
+      <input id="su-code" class="code-input" inputmode="numeric" autocomplete="one-time-code" maxlength="8" required>
+      <button class="btn" type="submit" data-t="ui.confirm"></button>
+      <button class="btn secondary" type="button" id="su-cancel" data-t="ui.cancel"></button>
+    </form>
+  </section>
+
+  <section id="v-totp" data-view class="card hidden">
+    <h1 data-t="totp.title"></h1>
+    <p data-t="totp.text"></p>
+    <div class="qr" id="totp-qr"></div>
+    <p class="muted"><span data-t="totp.manual"></span> <code class="key" id="totp-key"></code></p>
+    <form id="f-totp">
+      <label for="t-code" data-t="totp.code"></label>
+      <input id="t-code" class="code-input" inputmode="numeric" autocomplete="one-time-code" maxlength="8" required>
+      <button class="btn" type="submit" data-t="ui.confirm"></button>
+      <button class="btn secondary" type="button" data-go="account" data-t="ui.cancel"></button>
+    </form>
+  </section>
+
+  <section id="v-dest" data-view class="card hidden">
+    <h1 id="dest-title"></h1>
+    <form id="f-dest">
+      <label for="d-value" id="dest-label"></label>
+      <input id="d-value" maxlength="254" required>
+      <button class="btn" type="submit" data-t="dest.send"></button>
+      <button class="btn secondary" type="button" data-go="account" data-t="ui.cancel"></button>
+    </form>
+    <form id="f-dest-code" class="hidden">
+      <p class="muted" id="dest-sent"></p>
+      <label for="d-code" data-t="dest.code"></label>
+      <input id="d-code" class="code-input" inputmode="numeric" autocomplete="one-time-code" maxlength="8" required>
+      <button class="btn" type="submit" data-t="ui.confirm"></button>
+      <button class="btn secondary" type="button" data-go="account" data-t="ui.cancel"></button>
+    </form>
+  </section>
+
+  <section id="v-start" data-view class="card hidden">
+    <h1 id="start-title"></h1>
+    <form id="f-start">
+      <label for="s-user" data-t="start.user"></label>
+      <input id="s-user" autocomplete="username" maxlength="256" required>
+      <button class="btn" type="submit" data-t="ui.continue"></button>
+      <button class="btn secondary" type="button" data-go="home" data-t="ui.back"></button>
+    </form>
+  </section>
+
+  <section id="v-flow" data-view class="card hidden">
+    <h1 data-t="flow.title"></h1>
+    <p class="muted" id="flow-progress"></p>
+    <div id="flow-methods"></div>
+    <form id="f-flow-code" class="hidden">
+      <p class="muted" id="flow-sent"></p>
+      <label for="fl-code" data-t="flow.code"></label>
+      <input id="fl-code" class="code-input" inputmode="numeric" autocomplete="one-time-code" maxlength="8" required>
+      <button class="btn" type="submit" data-t="flow.verify"></button>
+    </form>
+    <p class="muted" id="flow-nocode"></p>
+    <button class="btn secondary" data-go="home" data-t="ui.cancel"></button>
+  </section>
+
+  <section id="v-newpwd" data-view class="card hidden">
+    <h1 data-t="newpwd.title"></h1>
+    <form id="f-newpwd">
+      <label for="n-new" data-t="change.new"></label>
+      <input id="n-new" type="password" autocomplete="new-password" maxlength="256" required>
+      <ul class="req" id="n-req"></ul>
+      <label for="n-new2" data-t="change.repeat"></label>
+      <input id="n-new2" type="password" autocomplete="new-password" maxlength="256" required>
+      <button class="btn" type="submit" data-t="newpwd.submit"></button>
+    </form>
+  </section>
+
+  <section id="v-unlock" data-view class="card hidden">
+    <h1 data-t="unlock.title"></h1>
+    <p data-t="unlock.text"></p>
+    <button class="btn" id="btn-unlock" data-t="unlock.submit"></button>
+  </section>
+
+  <section id="v-done" data-view class="card hidden">
+    <h1 id="done-title"></h1>
+    <p id="done-text" class="pre"></p>
+    <button class="btn" data-go="home" data-t="ui.home"></button>
+  </section>
+
+</main>
+<footer id="footer"></footer>
+</body>
+</html>

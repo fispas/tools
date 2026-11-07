@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Amministrazione</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <link rel="stylesheet" href="/theme.css" id="theme">
+  <script src="/js/api.js" defer></script>
+  <script src="/js/admin.js" defer></script>
+</head>
+<body class="loading">
+<header>
+  <img id="logo" class="hidden" alt="">
+  <span class="title"><span class="company"></span> - amministrazione</span>
+  <span class="user" id="who"></span>
+</header>
+<main class="wide">
+
+  <section id="v-wait" data-view class="card"><p>Verifica dell'accesso in corso...</p></section>
+
+  <section id="v-denied" data-view class="card hidden">
+    <h1>Accesso negato</h1>
+    <p>Il pannello è riservato ai membri dei gruppi Admin e Helpdesk del portale, autenticati con l'account di Windows da un PC del dominio. Dopo l'aggiunta a un gruppo serve un nuovo accesso a Windows.</p>
+  </section>
+
+  <section id="v-2fa" data-view class="card hidden">
+    <h1>Verifica con l'app di autenticazione</h1>
+    <div id="f2-setup" class="hidden">
+      <p>Primo accesso: configura l'app di autenticazione dedicata al pannello (inquadra il QR code).</p>
+      <div class="qr" id="f2-qr"></div>
+      <p class="muted">Chiave: <code class="key" id="f2-key"></code></p>
+    </div>
+    <form id="f-2fa">
+      <label for="f2-code">Codice dell'app</label>
+      <input id="f2-code" class="code-input" inputmode="numeric" autocomplete="one-time-code" maxlength="8" required>
+      <button class="btn" type="submit">Verifica</button>
+    </form>
+  </section>
+
+  <section id="v-panel" data-view class="hidden">
+    <nav class="tabs" id="main-tabs">
+      <button data-tab="t-dash" class="active">Cruscotto</button>
+      <button data-tab="t-users">Utenti</button>
+      <button data-tab="t-audit">Audit</button>
+      <button data-tab="t-health">Stato</button>
+      <button data-tab="t-settings" class="admin-only">Configurazione</button>
+    </nav>
+
+    <div id="t-dash" class="tab"><div class="kpis" id="kpis"></div></div>
+
+    <div id="t-users" class="tab hidden">
+      <div class="card">
+        <form id="f-search" class="row">
+          <div><label for="q">Cerca utente (nome, cognome, nome utente)</label><input id="q" minlength="2" maxlength="100" required></div>
+          <div><button class="btn" type="submit">Cerca</button></div>
+        </form>
+        <table><thead><tr><th>Utente</th><th>Nome</th><th>Stato</th><th>Registrazione</th></tr></thead><tbody id="users"></tbody></table>
+      </div>
+      <div class="card hidden" id="user-detail">
+        <h2 id="ud-title"></h2>
+        <div id="ud-info"></div>
+        <label for="ud-reason">Motivo dell'operazione (obbligatorio, finisce nell'audit)</label>
+        <input id="ud-reason" maxlength="500">
+        <div id="ud-actions"></div>
+        <h2>Ultimi eventi</h2>
+        <table><tbody id="ud-events"></tbody></table>
+      </div>
+    </div>
+
+    <div id="t-audit" class="tab hidden">
+      <div class="card">
+        <form id="f-audit" class="row">
+          <div><label for="a-from">Dal</label><input id="a-from" type="date"></div>
+          <div><label for="a-to">Al</label><input id="a-to" type="date"></div>
+          <div><label for="a-user">Utente / operatore</label><input id="a-user" maxlength="100"></div>
+          <div><label for="a-ev">ID evento</label><input id="a-ev" type="number"></div>
+          <div><button class="btn" type="submit">Filtra</button><a class="btn secondary" id="a-csv" href="#">Esporta CSV</a></div>
+        </form>
+        <table><thead><tr><th>Data</th><th>ID</th><th>Esito</th><th>Utente</th><th>Operatore</th><th>IP</th><th>Messaggio</th></tr></thead><tbody id="audit"></tbody></table>
+      </div>
+    </div>
+
+    <div id="t-health" class="tab hidden">
+      <div class="card"><table><tbody id="health"></tbody></table></div>
+    </div>
+
+    <div id="t-settings" class="tab hidden">
+      <div class="card">
+        <nav class="tabs" id="set-tabs"></nav>
+        <div id="set-body"></div>
+        <div class="savebar">
+          <button class="btn" id="btn-save">Salva la configurazione</button>
+          <button class="btn secondary" id="btn-reload">Annulla le modifiche</button>
+          <a class="btn secondary" href="/" target="_blank" rel="noopener">Apri il portale</a>
+          <span class="muted" id="dirty"></span>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+<footer id="footer"></footer>
+</body>
+</html>

@@ -335,7 +335,7 @@ Add-Page 'Account del servizio (gMSA)' {
     $kds = @(Get-KdsRootKey -ErrorAction SilentlyContinue)
     if ($kds.Count) {
         $eff = ($kds | Sort-Object EffectiveTime | Select-Object -First 1).EffectiveTime
-        if ($eff -gt (Get-Date)) { Add-Text "KDS root key presente ma utilizzabile dal $eff: tornare dopo quell'ora (lo stato della procedura e' salvato)." 'DarkOrange' | Out-Null }
+        if ($eff -gt (Get-Date)) { Add-Text "KDS root key presente ma utilizzabile dal $($eff): tornare dopo quell'ora (lo stato della procedura e' salvato)." 'DarkOrange' | Out-Null }
         else { Add-Text 'KDS root key presente e valida.' 'DarkGreen' | Out-Null }
     } else {
         Add-Text 'KDS root key assente: va creata una volta per foresta. Diventa utilizzabile dopo 10 ore (tempo di replica tra i DC).' 'DarkOrange' | Out-Null

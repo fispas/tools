@@ -15,6 +15,7 @@ reports/
 !**/examples/*.csv
 *.html
 !**/examples/*.html
+!**/wwwroot/**/*.html
 *.docx
 *.zip
 

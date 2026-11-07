@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Una riga su cosa fa.
 
