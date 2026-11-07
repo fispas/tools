@@ -60,7 +60,13 @@ jobs:
           Copy-Item installer\Install-FispaSSPR.ps1 $out
           Copy-Item installer\schema\* (Join-Path $out 'schema')
           Copy-Item README.md (Join-Path $out 'LEGGIMI.md')
-          if (-not (Test-Path (Join-Path $out 'app\FispaSSPR.exe'))) { Write-Host '::error::FispaSSPR.exe mancante'; exit 1 }
+          $required = @('Install-FispaSSPR.ps1', 'LEGGIMI.md', 'schema\FispaSSPR-Schema.ldf', 'app\FispaSSPR.exe',
+            'app\wwwroot\index.html', 'app\wwwroot\admin\index.html', 'app\wwwroot\css\style.css',
+            'app\wwwroot\js\api.js', 'app\wwwroot\js\portal.js', 'app\wwwroot\js\admin.js')
+          $missing = @($required | Where-Object { -not (Test-Path (Join-Path $out $_)) })
+          foreach ($m in $missing) { Write-Host "::error::File mancante nel pacchetto: $m" }
+          if ($missing) { exit 1 }
+          Get-ChildItem $out -Recurse -File | Where-Object { $_.FullName -notmatch '\\app\\(?!wwwroot)' } | ForEach-Object { $_.FullName.Substring($out.Length + 1) }
           & (Join-Path $out 'app\FispaSSPR.exe') version
 
       - name: Pubblica pacchetto

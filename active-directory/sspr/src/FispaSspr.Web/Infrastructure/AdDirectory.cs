@@ -305,7 +305,7 @@ public sealed class AdDirectory : IDirectory, IEnrollmentStore
 
     private PasswordOperationResult MapError(Exception ex, string op)
     {
-        var e = ex is TargetInvocationException { InnerException: not null } tie ? tie.InnerException : ex;
+        var e = ex is TargetInvocationException { InnerException: { } inner } ? inner : ex;
         var hr = e.HResult;
         var text = (e as DirectoryServicesCOMException)?.ExtendedErrorMessage ?? e.Message;
         _log.LogWarning("Operazione {Op} non riuscita: 0x{Hr:X8} {Message}", op, hr, text);
