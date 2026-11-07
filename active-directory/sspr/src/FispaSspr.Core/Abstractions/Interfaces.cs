@@ -81,6 +81,10 @@ public enum AuditEventId
     EnrollmentMethodRemoved = 1102,
     EnrollmentResetByAdmin = 1103,
     EnrollmentInvalidData = 1104,
+    StepUpVerified = 1105,
+    StepUpFailed = 1106,
+    UserSignIn = 1150,
+    UserSignInFailed = 1151,
     PasswordChanged = 1201,
     PasswordChangeFailed = 1202,
     ResetRequested = 1301,
@@ -95,5 +99,6 @@ public enum AuditEventId
     ProtectedAccountAttempt = 1601,
     RateLimitTriggered = 1602,
     ConfigurationChanged = 1900,
+    BrandingChanged = 1901,
     Error = 1990,
 }

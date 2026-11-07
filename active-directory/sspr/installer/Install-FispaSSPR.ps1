@@ -29,7 +29,7 @@
     powershell -ExecutionPolicy Bypass -File .\Install-FispaSSPR.ps1 -Uninstall
 
 .NOTES
-    Versione: 0.2.0
+    Versione: 0.3.0
     Repo:     fispas/tools (active-directory/sspr/installer)
     Richiede: server membro del dominio (non DC), Windows Server 2016+, amministratore locale e diritti AD adeguati
               (Domain Admins per gMSA/deleghe/gruppi, Schema Admins solo per lo schema)
@@ -56,7 +56,7 @@ Add-Type -AssemblyName System.Windows.Forms, System.Drawing, System.DirectorySer
 [System.Windows.Forms.Application]::EnableVisualStyles()
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
-$Version = '0.2.0'
+$Version = '0.3.0'
 $DataDir = Join-Path $env:ProgramData 'FispaSSPR'
 $InstallDir = Join-Path $env:ProgramFiles 'FispaSSPR'
 $StateFile = Join-Path $DataDir 'installer-state.json'
@@ -685,7 +685,7 @@ Add-Page 'Fine' {
     $url = if ($W.Contains('PortalUrl')) { $W.PortalUrl } else { '' }
     Add-Text "Portale utenti:  $url" 'Black' | Out-Null
     Add-Text "Pannello amministrazione:  $($url)admin/" 'Black' | Out-Null
-    Add-Text "Prossimi passi (pochi minuti):`r`n1. Accedere al pannello da un PC del dominio con un account del gruppo $($W.AdminGroup) (dopo un nuovo logon) e configurare l'app di autenticazione dell'operatore.`r`n2. Se si usa un nome DNS dedicato, creare il record CNAME $($W.Alias) -> $env:COMPUTERNAME.`r`n3. Per l'accesso automatico con Windows aggiungere l'indirizzo del portale alla zona Intranet (GPO: Elenco di assegnazione siti alle aree, valore 1).`r`n4. Comunicare l'indirizzo agli utenti o inviare gli inviti dal pannello.`r`n5. Conservare il backup della chiave: $($W.BackupFile)" | Out-Null
+    Add-Text "Prossimi passi (pochi minuti):`r`n1. Accedere al pannello da un PC del dominio con un account del gruppo $($W.AdminGroup) (dopo un nuovo logon) e configurare l'app di autenticazione dell'operatore.`r`n2. Se si usa un nome DNS dedicato, creare il record CNAME $($W.Alias) -> $env:COMPUTERNAME.`r`n3. Per l'accesso automatico con Windows aggiungere l'indirizzo del portale alla zona Intranet (GPO: Elenco di assegnazione siti alle aree, valore 1).`r`n4. Personalizzare logo, colori, testi, notifiche e funzioni dal pannello (Configurazione).`r`n5. Comunicare l'indirizzo agli utenti o inviare gli inviti dal pannello.`r`n6. Conservare il backup della chiave: $($W.BackupFile)" | Out-Null
     Add-Button 'Apri il portale' { Start-Process $url } 4 | Out-Null
     Add-Button 'Apri il pannello' { Start-Process "$($url)admin/" } 4 | Out-Null
 } { $form.Close(); $true }

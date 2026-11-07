@@ -1,7 +1,16 @@
 'use strict';
-// Client dell'API FispaSSPR (contratto in api/openapi.yaml). Nessuna dipendenza esterna.
+// Client dell'API FispaSSPR (contratto in api/openapi.yaml), testi e aspetto dal server. Nessuna dipendenza esterna.
 const Api = {
   session: null,
+  ui: { texts: {}, branding: {}, features: {} },
+
+  async loadUi() {
+    try {
+      const r = await fetch('/api/v1/ui', { credentials: 'same-origin' });
+      if (r.ok) Api.ui = await r.json();
+    } catch (e) { /* testi predefiniti nell'HTML */ }
+    return Api.ui;
+  },
 
   async refresh() {
     const r = await fetch('/api/v1/session', { credentials: 'same-origin' });
@@ -9,8 +18,8 @@ const Api = {
     return Api.session;
   },
 
-  async windowsLogin() {
-    const r = await fetch('/api/v1/session/windows', { credentials: 'include' });
+  async windowsLogin(panel) {
+    const r = await fetch('/api/v1/session/windows' + (panel ? '?panel=' + panel : ''), { credentials: 'include' });
     if (!r.ok) return null;
     Api.session = await r.json();
     return Api.session;
@@ -27,9 +36,10 @@ const Api = {
     if (!r.ok) {
       const err = new Error((data && data.title) || ('Errore ' + r.status));
       err.status = r.status;
+      err.code = data && data.code;
       err.errors = (data && data.errors) || [];
       err.retryAfter = r.headers.get('Retry-After');
-      if (r.status === 403 && data && /Sessione scaduta/.test(data.title)) await Api.refresh();
+      if (err.code === 'err.sessionExpired') await Api.refresh();
       throw err;
     }
     return data;
@@ -41,7 +51,26 @@ const Api = {
   del: (u) => Api.call('DELETE', u),
 };
 
-// ---- helper DOM (niente innerHTML con dati utente: solo textContent)
+// ---- testi: chiave del catalogo -> testo (personalizzabile dal pannello), con segnaposto {nome}
+function T(key, vars) {
+  let t = (Api.ui.texts && Api.ui.texts[key]) || key;
+  const all = Object.assign({ company: companyName(), helpdesk: (Api.ui.branding && Api.ui.branding.helpdeskContact) || '' }, vars || {});
+  return t.replace(/\{([A-Za-z][A-Za-z0-9]*)\}/g, (m, n) => (n in all ? String(all[n]) : m));
+}
+
+function companyName() {
+  const b = Api.ui.branding || {};
+  return b.companyName || (Api.ui.texts && Api.ui.texts['ui.headerTitle']) || '';
+}
+
+// Applica i testi agli elementi con data-t (contenuto), data-tp (placeholder), data-ta (aria-label)
+function applyTexts(root) {
+  $$('[data-t]', root).forEach(e => { e.textContent = T(e.dataset.t); });
+  $$('[data-tp]', root).forEach(e => { e.placeholder = T(e.dataset.tp); });
+  $$('[data-ta]', root).forEach(e => { e.setAttribute('aria-label', T(e.dataset.ta)); });
+}
+
+// ---- helper DOM (niente innerHTML con dati utente o testi personalizzati: solo textContent)
 const $ = (s, root) => (root || document).querySelector(s);
 const $$ = (s, root) => Array.from((root || document).querySelectorAll(s));
 
@@ -50,6 +79,8 @@ function el(tag, attrs, ...children) {
   for (const [k, v] of Object.entries(attrs || {})) {
     if (k === 'class') e.className = v;
     else if (k === 'onclick') e.addEventListener('click', v);
+    else if (k === 'onchange') e.addEventListener('change', v);
+    else if (k === 'oninput') e.addEventListener('input', v);
     else if (v !== null && v !== undefined && v !== false) e.setAttribute(k, v === true ? '' : v);
   }
   for (const c of children.flat()) if (c !== null && c !== undefined) e.append(c instanceof Node ? c : document.createTextNode(String(c)));
@@ -59,21 +90,22 @@ function el(tag, attrs, ...children) {
 function show(id) {
   $$('[data-view]').forEach(v => v.classList.toggle('hidden', v.id !== id));
   $$('.msg').forEach(m => { if (!m.dataset.keep) m.remove(); });
-  const first = $('#' + id + ' input:not([type=hidden])');
+  const first = $('#' + id + ' input:not([type=hidden]):not([disabled])');
   if (first) setTimeout(() => first.focus(), 30);
+  window.scrollTo(0, 0);
 }
 
 function message(container, kind, text, list) {
-  const box = el('div', { class: 'msg ' + kind }, text);
+  const box = el('div', { class: 'msg ' + kind, role: kind === 'err' ? 'alert' : 'status' }, text);
   if (list && list.length) box.append(el('ul', null, list.map(x => el('li', null, x))));
   const c = typeof container === 'string' ? $(container) : container;
-  $$('.msg', c).forEach(m => m.remove());
+  $$(':scope > .msg', c).forEach(m => m.remove());
   c.prepend(box);
   return box;
 }
 
 function errorText(e) {
-  if (e.status === 429 && e.retryAfter) return e.message + ' (attendere circa ' + Math.ceil(e.retryAfter / 60) + ' minuti)';
+  if (e.status === 429 && e.retryAfter) return e.message + ' ' + T('err.rateLimitWait', { minutes: Math.max(1, Math.ceil(e.retryAfter / 60)) });
   return e.message;
 }
 
@@ -88,7 +120,7 @@ function setQr(container, svgText) {
 function busy(button, on) {
   if (!button) return;
   button.disabled = on;
-  if (on) { button.dataset.label = button.textContent; button.textContent = 'Attendere...'; }
+  if (on) { button.dataset.label = button.textContent; button.textContent = T('ui.wait'); }
   else if (button.dataset.label) button.textContent = button.dataset.label;
 }
 
@@ -99,9 +131,34 @@ async function guarded(button, container, fn) {
   finally { busy(button, false); }
 }
 
-function applyBranding(s) {
-  const b = (s && s.branding) || {};
-  if (b.companyName) { $$('.company').forEach(x => x.textContent = b.companyName); document.title = b.companyName + ' - ' + document.title; }
-  if (b.logoUrl && $('#logo')) { $('#logo').src = b.logoUrl; $('#logo').classList.remove('hidden'); }
-  if (b.helpdeskContact) $$('.helpdesk').forEach(x => x.textContent = b.helpdeskContact);
+// Aspetto: titolo, logo, icona, avviso, piede pagina, collegamento alla guida
+function applyBranding(suffix) {
+  const b = Api.ui.branding || {};
+  const name = companyName();
+  const title = b.portalTitle || T('ui.pageTitle');
+  document.title = (name ? name + ' - ' : '') + title + (suffix ? ' - ' + suffix : '');
+  $$('.company').forEach(x => { x.textContent = (b.showCompanyName === false) ? '' : name; });
+  $$('.portal-title').forEach(x => { x.textContent = b.portalTitle || ''; x.classList.toggle('hidden', !b.portalTitle); });
+  $$('.tagline').forEach(x => { x.textContent = b.tagline || ''; x.classList.toggle('hidden', !b.tagline); });
+  const logo = $('#logo');
+  if (logo) { if (b.logoUrl) { logo.src = b.logoUrl; logo.alt = name; logo.classList.remove('hidden'); } else logo.classList.add('hidden'); }
+  const theme = $('#theme');
+  if (theme && b.themeVersion) theme.href = '/theme.css?v=' + encodeURIComponent(b.themeVersion);
+  if (b.faviconUrl) {
+    let ico = $('link[rel=icon]');
+    if (!ico) { ico = el('link', { rel: 'icon' }); document.head.append(ico); }
+    ico.href = b.faviconUrl;
+  }
+  const ann = $('#announcement');
+  if (ann) {
+    ann.className = 'announcement ' + ((b.announcement && b.announcement.level) || 'info');
+    ann.textContent = b.announcement ? b.announcement.text : '';
+    ann.classList.toggle('hidden', !b.announcement);
+  }
+  const footer = $('#footer');
+  if (footer) {
+    footer.replaceChildren(el('span', null, T('ui.footer')));
+    if (b.helpUrl && /^https?:\/\//i.test(b.helpUrl)) footer.append(' - ', el('a', { href: b.helpUrl, target: '_blank', rel: 'noopener noreferrer' }, T('ui.helpLink')));
+  }
+  document.body.classList.remove('loading');
 }

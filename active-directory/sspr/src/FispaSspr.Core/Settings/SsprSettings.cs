@@ -16,12 +16,116 @@ public sealed record SsprSettings
     public SmtpSettings Smtp { get; init; } = new();
     public SmsSettings Sms { get; init; } = new();
     public AdminSettings Admin { get; init; } = new();
+    public FeatureSettings Features { get; init; } = new();
+    public BrandingSettings Branding { get; init; } = new();
+    public NotificationSettings Notifications { get; init; } = new();
+    public SessionSettings Sessions { get; init; } = new();
+    public AuditSettings Audit { get; init; } = new();
+}
+
+/// <summary>Funzioni attivabili singolarmente (controllate dal servizio, non solo nascoste nell'interfaccia).</summary>
+public sealed record FeatureSettings
+{
+    public bool ResetEnabled { get; init; } = true;
+    public bool UnlockEnabled { get; init; } = true;
+    public bool ChangeEnabled { get; init; } = true;
+    public bool EnrollmentEnabled { get; init; } = true;
+    public bool WindowsLoginEnabled { get; init; } = true;
+    public bool PasswordLoginEnabled { get; init; } = true;
+    /// <summary>La prima registrazione dei metodi e' consentita solo con autenticazione Windows (PC aziendale).</summary>
+    public bool FirstEnrollmentRequiresWindowsLogin { get; init; }
+    /// <summary>Utente gia' registrato: per aggiungere, sostituire o rimuovere metodi conferma con un metodo esistente.</summary>
+    public bool StepUpForEnrollmentChanges { get; init; } = true;
+    public bool AllowMethodRemoval { get; init; } = true;
+    /// <summary>Reset: sblocca anche l'account se bloccato.</summary>
+    public bool ResetUnlocksAccount { get; init; } = true;
+    /// <summary>Reset: obbliga a cambiare la password al prossimo accesso.</summary>
+    public bool ResetForcesChangeAtNextLogon { get; init; }
+    /// <summary>Codici di reset/sblocco inviati in background: tempi di risposta indipendenti dal gateway (anti-enumerazione).</summary>
+    public bool BackgroundCodeDelivery { get; init; } = true;
+    public bool ShowPasswordRequirements { get; init; } = true;
+    public bool HelpdeskCanUnlock { get; init; } = true;
+    public bool HelpdeskCanClearEnrollment { get; init; } = true;
+    public bool HelpdeskCanInvite { get; init; } = true;
+    public bool AdminCanTemporaryReset { get; init; } = true;
+}
+
+/// <summary>Aspetto del portale: loghi, colori, testi. I file caricati stanno in %ProgramData%\FispaSSPR\branding.</summary>
+public sealed record BrandingSettings
+{
+    public string PortalTitle { get; init; } = "";
+    public string Tagline { get; init; } = "";
+    public bool ShowCompanyNameInHeader { get; init; } = true;
+    public string? LogoFile { get; init; }
+    public string? FaviconFile { get; init; }
+    public string? BackgroundFile { get; init; }
+    public int LogoHeight { get; init; } = 36;
+    public string PrimaryColor { get; init; } = "#1d4ed8";
+    public string PrimaryDarkColor { get; init; } = "#1e40af";
+    public string BackgroundColor { get; init; } = "#f4f6f9";
+    public string CardColor { get; init; } = "#ffffff";
+    public string TextColor { get; init; } = "#1a202c";
+    public string MutedColor { get; init; } = "#64748b";
+    public string HeaderColor { get; init; } = "#ffffff";
+    public string HeaderTextColor { get; init; } = "#1a202c";
+    public string SuccessColor { get; init; } = "#15803d";
+    public string ErrorColor { get; init; } = "#b91c1c";
+    public string FontFamily { get; init; } = "\"Segoe UI\", system-ui, -apple-system, Arial, sans-serif";
+    public int CornerRadius { get; init; } = 10;
+    /// <summary>CSS aggiuntivo (solo amministratori). Risorse esterne comunque bloccate dalla CSP.</summary>
+    public string CustomCss { get; init; } = "";
+    public string HelpUrl { get; init; } = "";
+    public AnnouncementSettings Announcement { get; init; } = new();
+    /// <summary>Testi personalizzati: chiave del catalogo -> testo. Le chiavi assenti usano il testo predefinito.</summary>
+    public IReadOnlyDictionary<string, string> Texts { get; init; } = new Dictionary<string, string>();
+}
+
+public sealed record AnnouncementSettings
+{
+    public bool Enabled { get; init; }
+    /// <summary>info, warn, err</summary>
+    public string Level { get; init; } = "info";
+    public string Text { get; init; } = "";
+}
+
+/// <summary>Notifiche all'utente, attivabili per evento. Oggetto e testo sono nel catalogo dei testi (chiavi notify.*).</summary>
+public sealed record NotificationSettings
+{
+    public bool MethodAdded { get; init; } = true;
+    public bool MethodRemoved { get; init; } = true;
+    public bool PasswordChanged { get; init; } = true;
+    public bool PasswordReset { get; init; } = true;
+    public bool AccountUnlocked { get; init; } = true;
+    public bool AdminUnlock { get; init; } = true;
+    public bool AdminClearEnrollment { get; init; } = true;
+    public bool AdminTemporaryReset { get; init; } = true;
+    /// <summary>Canali usati per le notifiche: email personale, SMS, email aziendale (attributo mail).</summary>
+    public bool ViaPersonalEmail { get; init; } = true;
+    public bool ViaSms { get; init; } = true;
+    public bool ViaCorporateEmail { get; init; }
+}
+
+public sealed record SessionSettings
+{
+    public int UserIdleMinutes { get; init; } = 15;
+    public int UserAbsoluteMinutes { get; init; } = 120;
+    /// <summary>Validita' della conferma d'identita' (step-up) per modificare metodi o password.</summary>
+    public int StepUpMinutes { get; init; } = 5;
+    /// <summary>Tempo minimo delle risposte di reset/sblocco/login (anti-enumerazione).</summary>
+    public int MinResponseMilliseconds { get; init; } = 700;
+    public int MaxSessions { get; init; } = 20000;
+}
+
+public sealed record AuditSettings
+{
+    public int RetentionMonths { get; init; } = 24;
 }
 
 public sealed record GeneralSettings
 {
     public string CompanyName { get; init; } = "";
     public string PortalUrl { get; init; } = "";
+    /// <summary>Obsoleto: sostituito da Branding.LogoFile (caricamento dal pannello). Ignorato.</summary>
     public string? LogoPath { get; init; }
     public string HelpdeskContact { get; init; } = "";
     public string DefaultCountryCode { get; init; } = "39";
@@ -128,6 +232,10 @@ public sealed record AdminSettings
     public string AdminGroupSid { get; init; } = "";
     /// <summary>SID del gruppo SSPR-Helpdesk (sblocco, azzeramento metodi, inviti).</summary>
     public string HelpdeskGroupSid { get; init; } = "";
+    /// <summary>Modificabile solo da config.json/installer, mai dal pannello.</summary>
     public bool RequireTotpForAdmins { get; init; } = true;
+    /// <summary>Durata massima della sessione dell'operatore dopo il secondo fattore.</summary>
     public int SessionMinutes { get; init; } = 30;
+    /// <summary>Tentativi errati del secondo fattore per operatore e per ora.</summary>
+    public int MaxSecondFactorFailuresPerHour { get; init; } = 5;
 }

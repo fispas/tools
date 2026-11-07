@@ -72,7 +72,7 @@ public static class Cli
                 {
                     var sid = Arg(args, "--sid") ?? throw new ArgumentException("--sid obbligatorio");
                     var file = Arg(args, "--backup") ?? throw new ArgumentException("--backup obbligatorio");
-                    var pwd = Environment.GetEnvironmentVariable("FISPASSPR_BACKUP_PASSWORD") ?? throw new ArgumentException("FISPASSPR_BACKUP_PASSWORD mancante");
+                    var pwd = Environment.GetEnvironmentVariable("FISPASSPR_BACKUP_PASSWORD") ?? ReadSecret("Password del backup: ");
                     var key = KeyStore.ImportBackup(file, pwd);
                     KeyStore.SaveImported(key, sid);
                     Console.WriteLine("OK " + key.Id);
@@ -86,6 +86,23 @@ public static class Cli
             return 1;
         }
         return 1;
+    }
+
+    /// <summary>Lettura della password da console senza eco.</summary>
+    private static string ReadSecret(string prompt)
+    {
+        if (Console.IsInputRedirected) throw new ArgumentException("FISPASSPR_BACKUP_PASSWORD mancante");
+        Console.Write(prompt);
+        var sb = new System.Text.StringBuilder();
+        while (true)
+        {
+            var k = Console.ReadKey(intercept: true);
+            if (k.Key == ConsoleKey.Enter) break;
+            if (k.Key == ConsoleKey.Backspace) { if (sb.Length > 0) sb.Length--; continue; }
+            if (!char.IsControl(k.KeyChar)) sb.Append(k.KeyChar);
+        }
+        Console.WriteLine();
+        return sb.ToString();
     }
 
     public static List<string> Validate(SsprSettings s)

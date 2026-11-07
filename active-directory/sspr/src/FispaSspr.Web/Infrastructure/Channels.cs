@@ -30,7 +30,8 @@ public sealed class SmtpChannel : IMessageChannel
         using var client = new SmtpClient(s.Host, s.Port) { EnableSsl = s.UseStartTls, DeliveryMethod = SmtpDeliveryMethod.Network, Timeout = 20000 };
         if (!string.IsNullOrEmpty(s.UserName))
             client.Credentials = new NetworkCredential(s.UserName, SettingsStore.Decrypt(s.PasswordEnvelope, _keys, "smtp"));
-        using var msg = new MailMessage(s.From, destination, subject, text) { BodyEncoding = Encoding.UTF8, SubjectEncoding = Encoding.UTF8 };
+        var safeSubject = subject.Replace("\r", " ", StringComparison.Ordinal).Replace("\n", " ", StringComparison.Ordinal);
+        using var msg = new MailMessage(s.From, destination, safeSubject, text) { BodyEncoding = Encoding.UTF8, SubjectEncoding = Encoding.UTF8 };
         await client.SendMailAsync(msg, ct).ConfigureAwait(false);
     }
 }
@@ -123,6 +124,22 @@ public sealed class AuditLog : IAuditLog
         }
         _log.LogInformation("AUDIT {EventId} {Outcome} user={User} actor={Actor} ip={Ip} {Message}", entry.EventId, entry.Outcome, entry.TargetUser, entry.Actor, entry.ClientIp, entry.Message);
         return Task.CompletedTask;
+    }
+
+    /// <summary>Elimina i file mensili piu' vecchi della conservazione configurata.</summary>
+    public void PurgeOlderThan(int months)
+    {
+        if (!Directory.Exists(SsprPaths.Audit)) return;
+        var limit = DateTimeOffset.UtcNow.AddMonths(-Math.Clamp(months, 1, 120));
+        var cutoff = limit.Year * 100 + limit.Month;
+        lock (_lock)
+        {
+            foreach (var f in Directory.GetFiles(SsprPaths.Audit, "audit-*.jsonl"))
+            {
+                var stem = Path.GetFileNameWithoutExtension(f);
+                if (stem.Length == 12 && int.TryParse(stem[6..], System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var ym) && ym < cutoff) File.Delete(f);
+            }
+        }
     }
 
     public IReadOnlyList<Record> Query(DateTimeOffset from, DateTimeOffset to, string? user, int? eventId, int max)

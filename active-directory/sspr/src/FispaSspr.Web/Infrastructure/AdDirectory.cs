@@ -1,5 +1,6 @@
 using System.DirectoryServices;
-using System.DirectoryServices.AccountManagement;
+using Ldap = System.DirectoryServices.Protocols;
+using System.Net;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Security.Principal;
@@ -82,6 +83,8 @@ public sealed class AdDirectory : IDirectory, IEnrollmentStore
         foreach (var g in de.Properties["tokenGroups"])
             if (g is byte[] b) groups.Add(new SecurityIdentifier(b, 0).Value);
         var classes = de.Properties["objectClass"].Cast<object>().Select(o => o.ToString() ?? string.Empty).ToList();
+        // solo utenti: niente computer, gMSA, gruppi o contatti anche se il SID arriva dall'esterno
+        if (!classes.Contains("user", StringComparer.OrdinalIgnoreCase) || classes.Contains("computer", StringComparer.OrdinalIgnoreCase)) return null;
         return new DirectoryUser
         {
             Sid = new SecurityIdentifier(sidBytes, 0).Value,
@@ -224,11 +227,49 @@ public sealed class AdDirectory : IDirectory, IEnrollmentStore
         catch (Exception ex) { return MapError(ex, "change"); }
     }, ct);
 
+    /// <summary>
+    /// Verifica della password con un bind LDAP Kerberos/Negotiate firmato e cifrato, poi "Who am I" (RFC 4532):
+    /// l'identita' autenticata deve corrispondere esattamente all'utente cercato (niente fallback su Guest o account locali).
+    /// </summary>
     public Task<bool> ValidateCredentialsAsync(DirectoryUser user, string password, CancellationToken ct = default) => Task.Run(() =>
     {
-        using var pc = Server.Length > 0 ? new PrincipalContext(ContextType.Domain, Server) : new PrincipalContext(ContextType.Domain);
-        return pc.ValidateCredentials(user.SamAccountName, password, ContextOptions.Negotiate | ContextOptions.Signing | ContextOptions.Sealing);
+        var domain = DomainNetbios;
+        var host = Server.Length > 0 ? Server : DnsDomain;
+        try
+        {
+            using var conn = new Ldap.LdapConnection(new Ldap.LdapDirectoryIdentifier(host), new NetworkCredential(user.SamAccountName, password, domain), Ldap.AuthType.Negotiate);
+            conn.SessionOptions.ProtocolVersion = 3;
+            conn.SessionOptions.Signing = true;
+            conn.SessionOptions.Sealing = true;
+            conn.Timeout = TimeSpan.FromSeconds(10);
+            conn.Bind();
+            var resp = (Ldap.ExtendedResponse)conn.SendRequest(new Ldap.ExtendedRequest("1.3.6.1.4.1.4203.1.11.3"));
+            var who = resp.ResponseValue is null ? string.Empty : System.Text.Encoding.UTF8.GetString(resp.ResponseValue);
+            return string.Equals(who, $"u:{domain}\\{user.SamAccountName}", StringComparison.OrdinalIgnoreCase);
+        }
+        catch (Ldap.DirectoryException) { return false; }
     }, ct);
+
+    private string? _netbios;
+    private string? _dns;
+
+    private string DnsDomain => _dns ??= NamingContext.Split(',').Where(p => p.StartsWith("DC=", StringComparison.OrdinalIgnoreCase)).Select(p => p[3..]).Aggregate((a, b) => a + "." + b);
+
+    /// <summary>Nome NetBIOS del dominio, letto dalla partizione di configurazione.</summary>
+    private string DomainNetbios
+    {
+        get
+        {
+            if (_netbios is not null) return _netbios;
+            using var root = new DirectoryEntry(Prefix + "RootDSE", null, null, Auth);
+            var config = (string)root.Properties["configurationNamingContext"].Value!;
+            using var parts = Entry("CN=Partitions," + config);
+            using var ds = new DirectorySearcher(parts, $"(&(objectClass=crossRef)(nCName={EscapeFilter(NamingContext)}))", new[] { "nETBIOSName" }, SearchScope.OneLevel);
+            var r = ds.FindOne();
+            _netbios = r?.Properties["nETBIOSName"].Count > 0 ? (string)r.Properties["nETBIOSName"][0] : DnsDomain.Split('.')[0].ToUpperInvariant();
+            return _netbios;
+        }
+    }
 
     public Task<PasswordOperationResult> UnlockAsync(DirectoryUser user, CancellationToken ct = default) => Task.Run(() =>
     {

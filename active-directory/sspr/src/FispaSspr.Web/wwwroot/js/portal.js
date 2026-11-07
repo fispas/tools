@@ -1,12 +1,17 @@
 'use strict';
-// Portale utente: registrazione dei metodi, cambio password, reset e sblocco.
-const State = { flow: null, purpose: null, destMethod: null, destChallenge: null, changeChallenge: null, checkTimer: null };
-const LABELS = { totp: "App di autenticazione", sms: "SMS al cellulare", email: "Email personale" };
+// Portale utente: registrazione dei metodi, conferma d'identita', cambio password, reset e sblocco.
+const State = { flow: null, purpose: null, destMethod: null, destChallenge: null, checkTimer: null, enrollment: null, retry: null, retryView: null, stepChallenge: null };
+const M = (m) => T('method.' + m);
+const F = () => Api.ui.features || {};
 
 document.addEventListener('DOMContentLoaded', async () => {
+  await Api.loadUi();
+  applyTexts();
+  applyBranding();
+  applyFeatures();
+  $('#flow-nocode').textContent = T('flow.noCode');
   const s = await Api.refresh();
-  applyBranding(s);
-  updateWho();
+  updateWho(s);
   $$('[data-go]').forEach(b => b.addEventListener('click', () => go(b.dataset.go)));
   $('#btn-win').addEventListener('click', windowsLogin);
   $('#f-login').addEventListener('submit', login);
@@ -15,19 +20,35 @@ document.addEventListener('DOMContentLoaded', async () => {
   $('#f-dest').addEventListener('submit', destStart);
   $('#f-dest-code').addEventListener('submit', destConfirm);
   $('#f-change').addEventListener('submit', changePassword);
-  $('#c-send').addEventListener('click', changeSend);
-  $('#c-method').addEventListener('change', changeMethodChanged);
+  $('#f-stepup').addEventListener('submit', stepUpVerify);
+  $('#su-send').addEventListener('click', stepUpSend);
+  $('#su-method').addEventListener('change', stepUpMethodChanged);
+  $('#su-cancel').addEventListener('click', () => { State.retry = null; show(State.retryView || 'v-account'); });
   $('#f-start').addEventListener('submit', flowStart);
   $('#f-flow-code').addEventListener('submit', flowVerify);
   $('#f-newpwd').addEventListener('submit', flowComplete);
   $('#btn-unlock').addEventListener('click', flowComplete);
-  liveCheck('#c-new', '#c-req', () => null);
-  liveCheck('#n-new', '#n-req', () => State.flow && State.flow.flowId);
+  if (F().showPasswordRequirements !== false) {
+    liveCheck('#c-new', '#c-req', () => null);
+    liveCheck('#n-new', '#n-req', () => State.flow && State.flow.flowId);
+  }
   show('v-home');
 });
 
-function updateWho() {
-  const s = Api.session;
+// Funzioni disattivate in configurazione: nascoste (il servizio le rifiuta comunque)
+function applyFeatures() {
+  const f = F();
+  const on = {
+    reset: f.reset !== false, unlock: f.unlock !== false,
+    account: (f.change !== false || f.enrollment !== false) && (f.windowsLogin !== false || f.passwordLogin !== false),
+    windowsLogin: f.windowsLogin !== false, passwordLogin: f.passwordLogin !== false,
+  };
+  $$('[data-feature]').forEach(e => e.classList.toggle('hidden', !on[e.dataset.feature]));
+  $('#card-change').classList.toggle('hidden', f.change === false);
+}
+
+function updateWho(s) {
+  s = s || Api.session;
   $('#who').textContent = s && s.authenticated ? (s.displayName || s.userName) : '';
 }
 
@@ -35,14 +56,14 @@ async function go(where) {
   if (where === 'home') { State.flow = null; show('v-home'); return; }
   if (where === 'reset' || where === 'unlock') {
     State.purpose = where;
-    $('#start-title').textContent = where === 'reset' ? 'Reimposta la password' : "Sblocca l'account";
+    $('#start-title').textContent = T(where === 'reset' ? 'start.reset.title' : 'start.unlock.title');
     $('#s-user').value = '';
     show('v-start');
     return;
   }
   if (where === 'account') {
     if (!Api.session.authenticated) {
-      const s = await Api.windowsLogin().catch(() => null);
+      const s = F().windowsLogin !== false ? await Api.windowsLogin().catch(() => null) : null;
       if (!s || !s.authenticated) { show('v-login'); return; }
       updateWho();
     }
@@ -54,31 +75,86 @@ async function go(where) {
 async function windowsLogin(ev) {
   const s = await guarded(ev.target, '#v-login', () => Api.windowsLogin());
   if (s && s.authenticated) { updateWho(); await loadAccount(); }
-  else if (s !== undefined) message('#v-login', 'err', "Accesso con Windows non disponibile da questo PC: usa nome utente e password.");
+  else if (s !== undefined) message('#v-login', 'err', T('login.windowsUnavailable'));
 }
 
 async function login(ev) {
   ev.preventDefault();
-  const btn = ev.submitter;
-  const s = await guarded(btn, '#v-login', () => Api.post('/session/login', { userName: $('#l-user').value, password: $('#l-pwd').value }));
+  const s = await guarded(ev.submitter, '#v-login', () => Api.post('/session/login', { userName: $('#l-user').value, password: $('#l-pwd').value }));
   $('#l-pwd').value = '';
   if (s) { Api.session = s; updateWho(); await loadAccount(); }
 }
 
 async function logout() {
-  await Api.post('/session/logout').catch(() => null);
-  await Api.refresh();
+  const s = await Api.post('/session/logout').catch(() => null);
+  if (s) Api.session = s; else await Api.refresh();
+  State.enrollment = null;
   updateWho();
   show('v-home');
+}
+
+// ------------------------------------------------------------------ conferma d'identita' (step-up)
+// Azione protetta: se il servizio chiede la conferma con un metodo registrato, la si ottiene e si ripete l'azione.
+async function protectedAction(button, container, view, fn) {
+  busy(button, true);
+  try { return await fn(); }
+  catch (e) {
+    if (e.code === 'err.stepUpRequired') { State.retry = fn; State.retryView = view; openStepUp(); return undefined; }
+    if (e.code === 'err.windowsRequired') { message(container, 'err', e.message); return undefined; }
+    message(container, 'err', errorText(e), e.errors);
+    return undefined;
+  } finally { busy(button, false); }
+}
+
+function openStepUp() {
+  const st = State.enrollment;
+  const sel = $('#su-method');
+  const methods = (st ? st.methods : []).filter(m => !st.availableMethods.length || st.availableMethods.includes(m.method) || m.method === 'totp');
+  sel.replaceChildren(...methods.map(m => el('option', { value: m.method }, M(m.method) + (m.method === 'totp' ? '' : ' ' + m.destinationMasked))));
+  $('#su-code').value = '';
+  $('#su-sent').textContent = '';
+  State.stepChallenge = null;
+  stepUpMethodChanged();
+  show('v-stepup');
+}
+
+function stepUpMethodChanged() {
+  const m = $('#su-method').value;
+  $('#su-send').classList.toggle('hidden', !m || m === 'totp');
+  if (m === 'totp') { State.stepChallenge = null; $('#su-sent').textContent = T('stepup.totpHint'); stepUpTotp(); }
+  else $('#su-sent').textContent = '';
+}
+
+async function stepUpTotp() {
+  try { const r = await Api.post('/stepup/challenge', { method: 'totp' }); State.stepChallenge = r.challengeId; }
+  catch (e) { message('#v-stepup', 'err', errorText(e)); }
+}
+
+async function stepUpSend(ev) {
+  const r = await guarded(ev.target, '#v-stepup', () => Api.post('/stepup/challenge', { method: $('#su-method').value }));
+  if (r) { State.stepChallenge = r.challengeId; $('#su-sent').textContent = T('stepup.sent', { destination: r.destinationMasked }); $('#su-code').focus(); }
+}
+
+async function stepUpVerify(ev) {
+  ev.preventDefault();
+  if (!State.stepChallenge) { message('#v-stepup', 'err', T('err.codeRequestNew')); return; }
+  const st = await guarded(ev.submitter, '#v-stepup', () => Api.post('/stepup/verify', { challengeId: State.stepChallenge, code: $('#su-code').value }));
+  if (!st) return;
+  State.enrollment = st;
+  const fn = State.retry;
+  State.retry = null;
+  show(State.retryView || 'v-account');
+  if (fn) {
+    try { await fn(); }
+    catch (e) { message('#' + (State.retryView || 'v-account'), 'err', errorText(e), e.errors); }
+  } else message('#card-methods', 'ok', T('stepup.done'));
 }
 
 // ------------------------------------------------------------------ metodi registrati
 async function loadAccount() {
   const s = Api.session;
   if (s.manageable === false) {
-    show('v-done');
-    $('#done-title').textContent = 'Account non gestibile dal portale';
-    $('#done-text').textContent = "Per motivi di sicurezza questo account (amministrativo, di servizio o fuori dagli ambiti abilitati) non puo' usare il portale. Contatta l'help desk.";
+    done(T('account.notManageable.title'), T('account.notManageable.text'));
     return;
   }
   let st;
@@ -90,45 +166,48 @@ async function loadAccount() {
 
 function renderEnrollment(st) {
   State.enrollment = st;
-  $('#enroll-info').textContent = st.enrolled
-    ? `Sei registrato con ${st.methods.length} metodi. Potrai usarli per reimpostare la password o sbloccare l'account.`
-    : `Registra almeno ${st.minimumMethods} metodi: ti serviranno per reimpostare la password o sbloccare l'account senza chiamare l'help desk.`;
+  $('#enroll-info').textContent = st.enrolled ? T('enroll.enrolled', { count: st.methods.length }) : T('enroll.notEnrolled', { min: st.minimumMethods });
   const box = $('#methods');
   box.replaceChildren(...st.methods.map(m => el('div', { class: 'method' },
-    el('div', null, el('div', { class: 'name' }, LABELS[m.method]), el('div', { class: 'muted' }, m.destinationMasked)),
-    el('button', { class: 'btn secondary small', onclick: () => removeMethod(m.method) }, 'Rimuovi'))));
-  if (!st.methods.length) box.append(el('p', { class: 'muted' }, 'Nessun metodo registrato.'));
+    el('div', null, el('div', { class: 'name' }, M(m.method)), el('div', { class: 'muted' }, m.method === 'totp' ? '' : m.destinationMasked)),
+    st.canRemove ? el('button', { class: 'btn secondary small', onclick: (e) => removeMethod(e, m.method) }, T('enroll.remove')) : null)));
+  if (!st.methods.length) box.append(el('p', { class: 'muted' }, T('enroll.none')));
   const add = $('#add-methods');
   const registered = st.methods.map(m => m.method);
-  add.replaceChildren(...st.availableMethods.map(m => el('button', { class: 'btn', onclick: () => addMethod(m) },
-    (registered.includes(m) ? 'Sostituisci: ' : 'Aggiungi: ') + LABELS[m])));
-  // verifica per il cambio password
-  const sel = $('#c-method');
-  sel.replaceChildren(...st.methods.map(m => el('option', { value: m.method }, LABELS[m.method] + ' ' + (m.method === 'totp' ? '' : m.destinationMasked))));
-  $('#c-verify').classList.toggle('hidden', st.methods.length === 0);
-  changeMethodChanged();
+  if (st.firstEnrollmentBlocked) add.replaceChildren(el('div', { class: 'msg info', 'data-keep': '1' }, T('err.windowsRequired')));
+  else if (!st.availableMethods.length && !st.methods.length) add.replaceChildren(el('p', { class: 'muted' }, T('enroll.disabled')));
+  else add.replaceChildren(...st.availableMethods.map(m => el('button', { class: 'btn', onclick: (e) => addMethod(e, m) },
+    T(registered.includes(m) ? 'enroll.replace' : 'enroll.add', { method: M(m) }))));
+  $('#card-change').classList.toggle('hidden', st.changeEnabled === false);
 }
 
-async function removeMethod(m) {
-  if (!confirm('Rimuovere il metodo "' + LABELS[m] + '"?')) return;
-  const st = await guarded(null, '#v-account .card', () => Api.del('/enrollment/' + m));
-  if (st) { renderEnrollment(st); message('#v-account .card', 'ok', 'Metodo rimosso.'); }
+async function removeMethod(ev, m) {
+  if (!confirm(T('enroll.removeConfirm', { method: M(m) }))) return;
+  const st = await protectedAction(ev.target, '#card-methods', 'v-account', async () => {
+    const r = await Api.del('/enrollment/' + m);
+    renderEnrollment(r); message('#card-methods', 'ok', T('enroll.removed'));
+    return r;
+  });
+  return st;
 }
 
-async function addMethod(m) {
+async function addMethod(ev, m) {
   if (m === 'totp') {
-    const r = await guarded(null, '#v-account .card', () => Api.post('/enrollment/totp/start'));
-    if (!r) return;
-    setQr($('#totp-qr'), r.qrCodeSvg);
-    $('#totp-key').textContent = r.manualKey.replace(/(.{4})/g, '$1 ').trim();
-    $('#t-code').value = '';
-    show('v-totp');
+    await protectedAction(ev.target, '#card-methods', 'v-account', async () => {
+      const r = await Api.post('/enrollment/totp/start');
+      setQr($('#totp-qr'), r.qrCodeSvg);
+      $('#totp-key').textContent = r.manualKey.replace(/(.{4})/g, '$1 ').trim();
+      $('#t-code').value = '';
+      show('v-totp');
+      return r;
+    });
     return;
   }
   State.destMethod = m;
-  $('#dest-title').textContent = m === 'sms' ? 'Cellulare per gli SMS' : 'Email personale';
-  $('#dest-label').textContent = m === 'sms' ? 'Numero di cellulare (es. 333 1234567)' : 'Indirizzo email personale (non quello aziendale)';
+  $('#dest-title').textContent = T(m === 'sms' ? 'dest.sms.title' : 'dest.email.title');
+  $('#dest-label').textContent = T(m === 'sms' ? 'dest.sms.label' : 'dest.email.label');
   $('#d-value').type = m === 'sms' ? 'tel' : 'email';
+  $('#d-value').autocomplete = m === 'sms' ? 'tel' : 'email';
   $('#d-value').value = '';
   $('#f-dest').classList.remove('hidden');
   $('#f-dest-code').classList.add('hidden');
@@ -137,53 +216,44 @@ async function addMethod(m) {
 
 async function totpConfirm(ev) {
   ev.preventDefault();
-  const st = await guarded(ev.submitter, '#v-totp', () => Api.post('/enrollment/totp/confirm', { code: $('#t-code').value }));
-  if (st) { renderEnrollment(st); show('v-account'); message('#v-account .card', 'ok', 'App di autenticazione registrata.'); }
+  const st = await protectedAction(ev.submitter, '#v-totp', 'v-totp', () => Api.post('/enrollment/totp/confirm', { code: $('#t-code').value }));
+  if (st) { renderEnrollment(st); show('v-account'); message('#card-methods', 'ok', T('enroll.totpAdded')); }
 }
 
 async function destStart(ev) {
   ev.preventDefault();
-  const r = await guarded(ev.submitter, '#v-dest', () => Api.post('/enrollment/' + State.destMethod + '/start', { destination: $('#d-value').value }));
-  if (!r) return;
-  State.destChallenge = r.challengeId;
-  $('#dest-sent').textContent = 'Abbiamo inviato un codice a ' + r.destinationMasked + '.';
-  $('#d-code').value = '';
-  $('#f-dest').classList.add('hidden');
-  $('#f-dest-code').classList.remove('hidden');
-  $('#d-code').focus();
+  const value = $('#d-value').value;
+  await protectedAction(ev.submitter, '#v-dest', 'v-dest', async () => {
+    const r = await Api.post('/enrollment/' + State.destMethod + '/start', { destination: value });
+    State.destChallenge = r.challengeId;
+    $('#dest-sent').textContent = T('dest.sent', { destination: r.destinationMasked });
+    $('#d-code').value = '';
+    $('#f-dest').classList.add('hidden');
+    $('#f-dest-code').classList.remove('hidden');
+    $('#d-code').focus();
+    return r;
+  });
 }
 
 async function destConfirm(ev) {
   ev.preventDefault();
-  const st = await guarded(ev.submitter, '#v-dest', () => Api.post('/enrollment/' + State.destMethod + '/confirm', { challengeId: State.destChallenge, code: $('#d-code').value }));
-  if (st) { renderEnrollment(st); show('v-account'); message('#v-account .card', 'ok', 'Metodo registrato.'); }
+  const st = await protectedAction(ev.submitter, '#v-dest', 'v-dest', () => Api.post('/enrollment/' + State.destMethod + '/confirm', { challengeId: State.destChallenge, code: $('#d-code').value }));
+  if (st) { renderEnrollment(st); show('v-account'); message('#card-methods', 'ok', T('enroll.added')); }
 }
 
 // ------------------------------------------------------------------ cambio password
-function changeMethodChanged() {
-  const m = $('#c-method').value;
-  $('#c-send').classList.toggle('hidden', !m || m === 'totp');
-  State.changeChallenge = m === 'totp' ? 'totp' : null;
-}
-
-async function changeSend(ev) {
-  const r = await guarded(ev.target, '#f-change', () => Api.post('/password/change/challenge', { method: $('#c-method').value }));
-  if (r) { State.changeChallenge = r.challengeId; message('#f-change', 'info', 'Codice inviato a ' + r.destinationMasked + '.'); }
-}
-
 async function changePassword(ev) {
   ev.preventDefault();
-  if ($('#c-new').value !== $('#c-new2').value) { message('#f-change', 'err', 'Le due password non coincidono.'); return; }
-  const needsVerify = !$('#c-verify').classList.contains('hidden');
+  if ($('#c-new').value !== $('#c-new2').value) { message('#f-change', 'err', T('change.mismatch')); return; }
   const body = { currentPassword: $('#c-cur').value, newPassword: $('#c-new').value };
-  if (needsVerify) body.verification = { challengeId: State.changeChallenge, code: $('#c-code').value };
-  const ok = await guarded(ev.submitter, '#f-change', async () => { await Api.post('/password/change', body); return true; });
-  if (ok) {
-    ['#c-cur', '#c-new', '#c-new2', '#c-code'].forEach(s => $(s).value = '');
-    show('v-done');
-    $('#done-title').textContent = 'Password cambiata';
-    $('#done-text').textContent = 'Usa la nuova password da subito. Sugli altri dispositivi (telefono, posta) aggiornala quando richiesto.';
-  }
+  const ok = await protectedAction(ev.submitter, '#f-change', 'v-account', async () => {
+    await Api.post('/password/change', body);
+    ['#c-cur', '#c-new', '#c-new2'].forEach(s => $(s).value = '');
+    $('#c-req').replaceChildren();
+    done(T('change.done.title'), T('change.done.text'));
+    return true;
+  });
+  return ok;
 }
 
 // ------------------------------------------------------------------ verifica dal vivo della nuova password
@@ -195,9 +265,9 @@ function liveCheck(input, list, flowId) {
     State.checkTimer = setTimeout(async () => {
       try {
         const r = await Api.post('/password/check', { password: value, flowId: flowId() });
-        const items = [el('li', { class: value.length >= r.minLength ? 'okk' : 'bad' }, `Almeno ${r.minLength} caratteri`)];
-        r.errors.filter(e => !/caratteri\.$/.test(e) || !/almeno/.test(e)).forEach(e => items.push(el('li', { class: 'bad' }, e)));
-        if (r.valid) items.push(el('li', { class: 'okk' }, 'Password valida'));
+        const items = [el('li', { class: value.length >= r.minLength ? 'okk' : 'bad' }, T('pwd.minLength', { min: r.minLength }))];
+        r.errors.filter(e => !/caratteri\.?$/.test(e) || !/almeno/i.test(e)).forEach(e => items.push(el('li', { class: 'bad' }, e)));
+        if (r.valid) items.push(el('li', { class: 'okk' }, T('pwd.valid')));
         $(list).replaceChildren(...items);
       } catch (e) { /* la verifica completa avviene comunque all'invio */ }
     }, 450);
@@ -213,17 +283,16 @@ async function flowStart(ev) {
 
 function renderFlow() {
   const f = State.flow;
-  $('#flow-progress').textContent = `Verifiche completate: ${f.verificationsDone} di ${f.verificationsRequired}. Scegli come ricevere il codice.`;
+  $('#flow-progress').textContent = T('flow.progress', { done: f.verificationsDone, required: f.verificationsRequired });
   const box = $('#flow-methods');
   box.replaceChildren(...f.methods.map(m => el('div', { class: 'method' },
-    el('div', null, el('div', { class: 'name' }, LABELS[m.method]), el('div', { class: 'muted' }, m.destinationMasked)),
-    m.used ? el('span', { class: 'badge ok' }, 'verificato')
-      : el('button', { class: 'btn small', onclick: (e) => flowChallenge(e, m.methodId) }, m.method === 'totp' ? 'Usa' : 'Invia codice'))));
+    el('div', null, el('div', { class: 'name' }, M(m.method)), el('div', { class: 'muted' }, m.method === 'totp' ? '' : m.destinationMasked)),
+    m.used ? el('span', { class: 'badge ok' }, T('flow.verified'))
+      : el('button', { class: 'btn small', onclick: (e) => flowChallenge(e, m.methodId) }, T(m.method === 'totp' ? 'flow.use' : 'flow.send')))));
   const ch = f.currentChallenge;
   $('#f-flow-code').classList.toggle('hidden', !ch);
   if (ch) {
-    const m = f.methods.find(x => x.destinationMasked === ch.destinationMasked);
-    $('#flow-sent').textContent = m && m.method === 'totp' ? "Inserisci il codice mostrato dall'app di autenticazione." : 'Codice inviato a ' + ch.destinationMasked + '.';
+    $('#flow-sent').textContent = ch.method === 'totp' ? T('flow.totpHint') : T('flow.sent', { destination: ch.destinationMasked });
     $('#fl-code').value = '';
     setTimeout(() => $('#fl-code').focus(), 30);
   }
@@ -240,14 +309,14 @@ async function flowVerify(ev) {
   try { busy(ev.submitter, true); f = await Api.post(`/reset/${State.flow.flowId}/verify`, { code: $('#fl-code').value }); }
   catch (e) {
     message('#v-flow', 'err', errorText(e));
-    if (/ricominciare/.test(e.message)) { State.flow = null; setTimeout(() => go('home'), 2500); }
+    if (e.code === 'err.tooManyCodes' || e.code === 'err.flowExpired') { State.flow = null; setTimeout(() => go('home'), 2500); }
     return;
   } finally { busy(ev.submitter, false); }
   State.flow = f;
   if (f.readyToComplete) {
     if (State.purpose === 'reset') { ['#n-new', '#n-new2'].forEach(s => $(s).value = ''); $('#n-req').replaceChildren(); show('v-newpwd'); }
     else show('v-unlock');
-  } else { renderFlow(); message('#v-flow', 'ok', 'Verifica riuscita. Completa la verifica successiva.'); }
+  } else { renderFlow(); message('#v-flow', 'ok', T('flow.next')); }
 }
 
 async function flowComplete(ev) {
@@ -255,7 +324,7 @@ async function flowComplete(ev) {
   const btn = ev.submitter || ev.target;
   let body = {};
   if (State.purpose === 'reset') {
-    if ($('#n-new').value !== $('#n-new2').value) { message('#v-newpwd', 'err', 'Le due password non coincidono.'); return; }
+    if ($('#n-new').value !== $('#n-new2').value) { message('#v-newpwd', 'err', T('change.mismatch')); return; }
     body = { newPassword: $('#n-new').value };
   }
   const view = State.purpose === 'reset' ? '#v-newpwd' : '#v-unlock';
@@ -263,9 +332,12 @@ async function flowComplete(ev) {
   if (!ok) return;
   ['#n-new', '#n-new2'].forEach(s => $(s).value = '');
   State.flow = null;
+  if (State.purpose === 'reset') done(T('done.reset.title'), T('done.reset.text'));
+  else done(T('done.unlock.title'), T('done.unlock.text'));
+}
+
+function done(title, text) {
+  $('#done-title').textContent = title;
+  $('#done-text').textContent = text;
   show('v-done');
-  $('#done-title').textContent = State.purpose === 'reset' ? 'Password reimpostata' : 'Account sbloccato';
-  $('#done-text').textContent = State.purpose === 'reset'
-    ? 'Ora puoi accedere con la nuova password. Su telefono e posta aggiornala quando richiesto.'
-    : 'Ora puoi accedere di nuovo con la tua password.';
 }

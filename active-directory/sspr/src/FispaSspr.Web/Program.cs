@@ -24,6 +24,7 @@ var keys = KeyStore.Load();
 var dev = Environment.GetEnvironmentVariable("FISPASSPR_DEV") == "1";
 
 builder.Services.AddSingleton(settings);
+builder.Services.AddSingleton<TextCatalog>();
 builder.Services.AddSingleton(keys);
 builder.Services.AddSingleton<IMasterKeyProvider>(keys);
 builder.Services.AddSingleton(TimeProvider.System);
@@ -50,7 +51,9 @@ builder.Services.AddHsts(o => { o.MaxAge = TimeSpan.FromDays(365); o.IncludeSubD
 builder.WebHost.ConfigureKestrel(k =>
 {
     k.AddServerHeader = false;
-    k.Limits.MaxRequestBodySize = 256 * 1024;
+    // 4 MB: configurazione con tutti i testi personalizzati e caricamento di logo/sfondo (max 1 MB in base64)
+    k.Limits.MaxRequestBodySize = 4 * 1024 * 1024;
+    k.Limits.MaxRequestHeadersTotalSize = 64 * 1024;
     if (dev)
     {
         k.ListenLocalhost(5080, l => l.Protocols = HttpProtocols.Http1);
@@ -80,6 +83,7 @@ app.Use(async (ctx, next) =>
     h["Referrer-Policy"] = "no-referrer";
     h["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()";
     h["Cross-Origin-Opener-Policy"] = "same-origin";
+    h["Cross-Origin-Resource-Policy"] = "same-origin";
     if (ctx.Request.Path.StartsWithSegments("/api")) h["Cache-Control"] = "no-store";
     await next();
 });
@@ -92,14 +96,15 @@ app.Use(async (ctx, next) =>
     {
         ctx.Response.StatusCode = ex.Status;
         if (ex.RetryAfter is { } ra) ctx.Response.Headers.RetryAfter = ((int)Math.Ceiling(ra.TotalSeconds)).ToString(System.Globalization.CultureInfo.InvariantCulture);
-        await ctx.Response.WriteAsJsonAsync(new { type = "about:blank", title = ex.Message, status = ex.Status, errors = ex.Errors }, (System.Text.Json.JsonSerializerOptions?)null, "application/problem+json");
+        await ctx.Response.WriteAsJsonAsync(new { type = "about:blank", title = ex.Message, status = ex.Status, code = ex.Code, errors = ex.Errors }, (System.Text.Json.JsonSerializerOptions?)null, "application/problem+json");
     }
     catch (Exception ex) when (ex is not OperationCanceledException && !ctx.Response.HasStarted)
     {
         ctx.RequestServices.GetRequiredService<ILogger<Program>>().LogError(ex, "Errore non gestito su {Path}", ctx.Request.Path);
         await ctx.RequestServices.GetRequiredService<IAuditLog>().WriteAsync(new AuditEntry(AuditEventId.Error, AuditOutcome.Failure, null, null, ctx.Connection.RemoteIpAddress?.ToString(), "Errore imprevisto: " + ex.GetType().Name));
         ctx.Response.StatusCode = 500;
-        await ctx.Response.WriteAsJsonAsync(new { type = "about:blank", title = "Errore imprevisto. Riprovare o contattare l'help desk.", status = 500 }, (System.Text.Json.JsonSerializerOptions?)null, "application/problem+json");
+        var text = ctx.RequestServices.GetRequiredService<TextCatalog>().Get("err.unexpected");
+        await ctx.Response.WriteAsJsonAsync(new { type = "about:blank", title = text, status = 500, code = "err.unexpected" }, (System.Text.Json.JsonSerializerOptions?)null, "application/problem+json");
     }
 });
 
@@ -112,7 +117,8 @@ app.Use(async (ctx, next) =>
         if (!SessionStore.CsrfValid(s, ctx.Request.Headers["X-CSRF-Token"]))
         {
             ctx.Response.StatusCode = 403;
-            await ctx.Response.WriteAsJsonAsync(new { type = "about:blank", title = "Sessione scaduta: ricaricare la pagina.", status = 403 }, (System.Text.Json.JsonSerializerOptions?)null, "application/problem+json");
+            var text = ctx.RequestServices.GetRequiredService<TextCatalog>().Get("err.sessionExpired");
+            await ctx.Response.WriteAsJsonAsync(new { type = "about:blank", title = text, status = 403, code = "err.sessionExpired" }, (System.Text.Json.JsonSerializerOptions?)null, "application/problem+json");
             return;
         }
     }
@@ -134,11 +140,17 @@ app.Lifetime.ApplicationStarted.Register(() =>
     _ = Task.Run(async () =>
     {
         using var timer = new PeriodicTimer(TimeSpan.FromMinutes(1));
+        var tick = 0;
         while (await timer.WaitForNextTickAsync(app.Lifetime.ApplicationStopping).ConfigureAwait(false))
         {
             services.GetRequiredService<SessionStore>().Purge();
             services.GetRequiredService<PortalService>().PurgeFlows();
             services.GetRequiredService<SlidingWindowRateLimiter>().Purge(TimeSpan.FromHours(2));
+            if (tick++ % 1440 == 0)
+            {
+                try { services.GetRequiredService<AuditLog>().PurgeOlderThan(settings.Current.Audit.RetentionMonths); }
+                catch (IOException ex) { services.GetRequiredService<ILogger<Program>>().LogWarning(ex, "Pulizia dell'audit non riuscita"); }
+            }
         }
     });
 });

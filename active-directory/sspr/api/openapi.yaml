@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: FispaSSPR API
-  version: 0.2.0
+  version: 0.3.0
   description: |
     Contratto tra l'interfaccia web (src/FispaSspr.Web/wwwroot) e il motore del portale. Qualunque backend (ASP.NET Core, Node.js)
     che rispetta questo contratto, lo schema AD (docs/schema.md) e il formato cifrato (docs/crypto.md) e' intercambiabile.
@@ -12,7 +12,10 @@ info:
     - le risposte di /reset e /unlock non rivelano mai se un utente esiste, e' bloccato o ha metodi registrati
       (stessa risposta e tempi costanti);
     - in caso di limite di tentativi: 429 con header Retry-After;
-    - gli errori seguono lo schema Problem (RFC 7807) con messaggi in italiano pronti da mostrare.
+    - gli errori seguono lo schema Problem (RFC 7807) con messaggi pronti da mostrare (personalizzabili) e un campo `code`
+      stabile (chiave del catalogo dei testi, es. `err.stepUpRequired`) da usare nella logica dell'interfaccia;
+    - con un utente gia' registrato, modifica dei metodi e cambio password richiedono una conferma d'identita' recente
+      (POST /stepup/challenge + /stepup/verify): in mancanza la risposta e' 403 con code `err.stepUpRequired`.
 servers:
   - url: /api/v1
 tags:
@@ -28,11 +31,17 @@ paths:
       summary: Stato della sessione, token CSRF, utente se autenticato (autenticazione Windows o login)
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Session' } } } }
+  /ui:
+    get:
+      tags: [Sessione]
+      summary: Configurazione pubblica dell'interfaccia (testi personalizzati, aspetto, funzioni attive)
+      responses: { '200': { description: OK } }
   /session/windows:
     get:
       tags: [Sessione]
-      summary: Accesso con autenticazione Windows integrata (Negotiate) dai PC del dominio
+      summary: Accesso con autenticazione Windows integrata (Negotiate) dai PC del dominio; panel=admin per il pannello
       security: [ { adminWindows: [] } ]
+      parameters: [ { name: panel, in: query, required: false, schema: { type: string, enum: [admin] } } ]
       responses:
         '200': { description: Autenticato, content: { application/json: { schema: { $ref: '#/components/schemas/Session' } } } }
         '401': { description: Negoziazione in corso o non disponibile }
@@ -46,7 +55,23 @@ paths:
         '401': { $ref: '#/components/responses/Problem' }
         '429': { $ref: '#/components/responses/TooMany' }
   /session/logout:
-    post: { tags: [Sessione], summary: Chiude la sessione, responses: { '204': { description: OK } } }
+    post: { tags: [Sessione], summary: "Chiude la sessione: nuovo identificativo e nuovo token CSRF", responses: { '200': { description: Nuova sessione anonima, content: { application/json: { schema: { $ref: '#/components/schemas/Session' } } } } } }
+  /stepup/challenge:
+    post:
+      tags: [Sessione]
+      summary: Conferma d'identita' con un metodo gia' registrato - invia il codice (SMS/email) o prepara il TOTP
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [method], properties: { method: { type: string, enum: [totp, sms, email] } } } } } }
+      responses:
+        '200': { description: Sfida pronta (challengeId, destinationMasked) }
+        '429': { $ref: '#/components/responses/TooMany' }
+  /stepup/verify:
+    post:
+      tags: [Sessione]
+      summary: Verifica il codice della conferma d'identita' (valida per Sessions.StepUpMinutes)
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [challengeId, code], properties: { challengeId: { type: string }, code: { type: string } } } } } }
+      responses:
+        '200': { description: Stato della registrazione aggiornato, content: { application/json: { schema: { $ref: '#/components/schemas/EnrollmentStatus' } } } }
+        '400': { $ref: '#/components/responses/Problem' }
 
   /enrollment:
     get:
@@ -104,18 +129,10 @@ paths:
       requestBody: { required: true, content: { application/json: { schema: { type: object, required: [password], properties: { password: { type: string, format: password } } } } } }
       responses:
         '200': { description: Esito, content: { application/json: { schema: { $ref: '#/components/schemas/PasswordCheck' } } } }
-  /password/change/challenge:
-    post:
-      tags: [Password]
-      summary: Invia o prepara la verifica aggiuntiva richiesta per il cambio password (metodo registrato scelto)
-      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [methodId], properties: { methodId: { type: string } } } } } }
-      responses:
-        '204': { description: Codice inviato o TOTP pronto }
-        '429': { $ref: '#/components/responses/TooMany' }
   /password/change:
     post:
       tags: [Password]
-      summary: Cambio della password nota (eseguito come l'utente), con verifica aggiuntiva se configurata
+      summary: Cambio della password nota (eseguito come l'utente); richiede la conferma d'identita' se configurato
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ChangeRequest' } } } }
       responses:
         '204': { description: Password cambiata }
@@ -269,6 +286,26 @@ paths:
       summary: Aggiorna la configurazione (solo Admin, evento di audit)
       security: [ { adminWindows: [] } ]
       responses: { '204': { description: OK }, '400': { $ref: '#/components/responses/Problem' } }
+  /admin/texts:
+    get:
+      tags: [Amministrazione]
+      summary: Catalogo dei testi (chiave, sezione, descrizione, predefinito, personalizzato) per l'editor
+      security: [ { adminWindows: [] } ]
+      responses: { '200': { description: OK } }
+  /admin/branding/{asset}:
+    post:
+      tags: [Amministrazione]
+      summary: Carica logo, icona o sfondo (base64, max 1 MB; formato riconosciuto dai byte, SVG attivi rifiutati)
+      security: [ { adminWindows: [] } ]
+      parameters: [ { name: asset, in: path, required: true, schema: { type: string, enum: [logo, favicon, background] } } ]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [dataBase64], properties: { dataBase64: { type: string } } } } } }
+      responses: { '204': { description: OK }, '400': { $ref: '#/components/responses/Problem' } }
+    delete:
+      tags: [Amministrazione]
+      summary: Rimuove logo, icona o sfondo
+      security: [ { adminWindows: [] } ]
+      parameters: [ { name: asset, in: path, required: true, schema: { type: string, enum: [logo, favicon, background] } } ]
+      responses: { '204': { description: OK } }
   /admin/health:
     get:
       tags: [Amministrazione]

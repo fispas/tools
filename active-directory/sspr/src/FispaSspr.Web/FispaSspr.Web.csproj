@@ -7,7 +7,7 @@
     <LangVersion>latest</LangVersion>
     <RootNamespace>FispaSspr.Web</RootNamespace>
     <AssemblyName>FispaSSPR</AssemblyName>
-    <Version>0.2.0</Version>
+    <Version>0.3.0</Version>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <SelfContained>true</SelfContained>
     <InvariantGlobalization>false</InvariantGlobalization>
@@ -19,9 +19,13 @@
     <PackageReference Include="Microsoft.AspNetCore.Authentication.Negotiate" Version="8.0.11" />
     <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="8.0.1" />
     <PackageReference Include="System.DirectoryServices" Version="8.0.0" />
-    <PackageReference Include="System.DirectoryServices.AccountManagement" Version="8.0.1" />
+    <PackageReference Include="System.DirectoryServices.Protocols" Version="8.0.0" />
     <PackageReference Include="System.Diagnostics.EventLog" Version="8.0.1" />
     <PackageReference Include="QRCoder" Version="1.6.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Texts\texts.it.json" />
   </ItemGroup>
 
   <ItemGroup>

@@ -13,19 +13,21 @@ using FispaSspr.Web.Infrastructure;
 
 namespace FispaSspr.Web.App;
 
-/// <summary>Errore da mostrare all'utente (messaggio gia' in italiano).</summary>
+/// <summary>Errore da mostrare all'utente (messaggio gia' tradotto). Code e' un identificativo stabile per l'interfaccia.</summary>
 public sealed class PortalException : Exception
 {
-    public PortalException(int status, string message, IReadOnlyList<string>? errors = null, TimeSpan? retryAfter = null) : base(message)
+    public PortalException(int status, string message, IReadOnlyList<string>? errors = null, TimeSpan? retryAfter = null, string? code = null) : base(message)
     {
         Status = status;
         Errors = errors ?? Array.Empty<string>();
         RetryAfter = retryAfter;
+        Code = code;
     }
 
     public int Status { get; }
     public IReadOnlyList<string> Errors { get; }
     public TimeSpan? RetryAfter { get; }
+    public string? Code { get; }
 }
 
 public sealed class FlowMethod
@@ -56,14 +58,11 @@ public sealed class Flow
     public bool Ready => !Fake && Done >= Required;
 }
 
-/// <summary>Logica del portale: registrazione, cambio, reset e sblocco.</summary>
+/// <summary>Logica del portale: registrazione, conferma d'identita', cambio, reset e sblocco.</summary>
 public sealed class PortalService
 {
-    private static readonly TimeSpan MinResponse = TimeSpan.FromMilliseconds(600);
-
     private readonly SettingsStore _settings;
     private readonly AdDirectory _ad;
-    private readonly IMasterKeyProvider _keys;
     private readonly EnrollmentCodec _codec;
     private readonly SmtpChannel _mail;
     private readonly SmsChannel _sms;
@@ -73,18 +72,23 @@ public sealed class PortalService
     private readonly SlidingWindowRateLimiter _limiter;
     private readonly TimeProvider _time;
     private readonly ILogger<PortalService> _log;
+    private readonly TextCatalog _t;
     private readonly ConcurrentDictionary<string, Flow> _flows = new(StringComparer.Ordinal);
     private readonly byte[] _fakeKey = RandomNumberGenerator.GetBytes(32);
 
     public PortalService(SettingsStore settings, AdDirectory ad, IMasterKeyProvider keys, SmtpChannel mail, SmsChannel sms, IAuditLog audit,
-        IBreachedPasswordChecker breach, OtpChallengeStore otp, SlidingWindowRateLimiter limiter, TimeProvider time, ILogger<PortalService> log)
+        IBreachedPasswordChecker breach, OtpChallengeStore otp, SlidingWindowRateLimiter limiter, TimeProvider time, ILogger<PortalService> log, TextCatalog texts)
     {
-        _settings = settings; _ad = ad; _keys = keys; _codec = new EnrollmentCodec(keys); _mail = mail; _sms = sms; _audit = audit;
-        _breach = breach; _otp = otp; _limiter = limiter; _time = time; _log = log;
+        _settings = settings; _ad = ad; _codec = new EnrollmentCodec(keys); _mail = mail; _sms = sms; _audit = audit;
+        _breach = breach; _otp = otp; _limiter = limiter; _time = time; _log = log; _t = texts;
     }
 
     private SsprSettings S => _settings.Current;
+    private FeatureSettings F => _settings.Current.Features;
     private DateTimeOffset Now => _time.GetUtcNow();
+    public TextCatalog Texts => _t;
+
+    private PortalException Err(int status, string key, params (string, object?)[] vars) => new(status, _t.Get(key, vars), code: key);
 
     public ScopeSettings Scope => new() { AllowedOus = S.Directory.AllowedOus, ExcludedGroupSids = S.Directory.ExcludedGroupSids };
 
@@ -97,14 +101,17 @@ public sealed class PortalService
         return l;
     }
 
+    /// <summary>Metodi registrati che si possono ancora usare (metodo disattivato o canale non configurato = non usabile).</summary>
+    private IReadOnlyList<VerificationMethod> Usable(Enrollment e) => e.Methods.Where(AvailableMethods().Contains).ToList();
+
     private Task Audit(AuditEventId id, AuditOutcome outcome, string? user, string? actor, string? ip, string message) =>
         _audit.WriteAsync(new AuditEntry(id, outcome, user, actor, ip, message));
 
     private void Limit(string key, int limit, TimeSpan window, string? user, string? ip)
     {
-        if (_limiter.TryAcquire(key, limit, window)) return;
+        if (_limiter.TryAcquire(key, Math.Max(1, limit), window)) return;
         _ = Audit(AuditEventId.RateLimitTriggered, AuditOutcome.Blocked, user, null, ip, "Limite di tentativi raggiunto: " + key.Split(':')[0]);
-        throw new PortalException(429, "Troppi tentativi. Riprovare piu' tardi.", retryAfter: _limiter.RetryAfter(key, limit, window));
+        throw new PortalException(429, _t.Get("err.rateLimit"), retryAfter: _limiter.RetryAfter(key, Math.Max(1, limit), window), code: "err.rateLimit");
     }
 
     public void LimitGlobal(string? ip)
@@ -113,15 +120,33 @@ public sealed class PortalService
         if (!string.IsNullOrEmpty(ip)) Limit("ip:" + ip, S.RateLimits.PerIpPerHour, TimeSpan.FromHours(1), null, ip);
     }
 
+    public void LimitLogin(string? name, string? ip)
+    {
+        LimitGlobal(ip);
+        if (!string.IsNullOrEmpty(name)) Limit("login:" + name.ToLowerInvariant(), S.RateLimits.PerUserPerHour, TimeSpan.FromHours(1), name, ip);
+    }
+
+    public void RequireFeature(bool enabled)
+    {
+        if (!enabled) throw Err(403, "err.featureDisabled");
+    }
+
+    public async Task ConstantTime(DateTimeOffset start)
+    {
+        var min = TimeSpan.FromMilliseconds(Math.Clamp(S.Sessions.MinResponseMilliseconds, 200, 5000));
+        var jitter = TimeSpan.FromMilliseconds(RandomNumberGenerator.GetInt32(0, 250));
+        var elapsed = _time.GetUtcNow() - start;
+        if (elapsed < min + jitter) await Task.Delay(min + jitter - elapsed).ConfigureAwait(false);
+    }
+
     // ------------------------------------------------------------------ utente della sessione
 
     public async Task<DirectoryUser> RequireManageableUser(SessionData s, CancellationToken ct)
     {
-        if (!s.Authenticated) throw new PortalException(401, "Accesso richiesto.");
-        var u = await _ad.FindUserBySidAsync(s.UserSid!, ct).ConfigureAwait(false) ?? throw new PortalException(401, "Account non trovato.");
-        var p = AccountProtection.Evaluate(u, Scope);
-        if (!p.Manageable) throw new PortalException(403, "Questo account non puo' usare il portale: rivolgersi all'help desk.");
-        if (!u.Enabled) throw new PortalException(403, "L'account e' disabilitato.");
+        if (!s.Authenticated) throw Err(401, "err.loginRequired");
+        var u = await _ad.FindUserBySidAsync(s.UserSid!, ct).ConfigureAwait(false) ?? throw Err(401, "err.loginRequired");
+        if (!AccountProtection.Evaluate(u, Scope).Manageable) throw Err(403, "err.notManageable");
+        if (!u.Enabled) throw Err(403, "err.disabled");
         return u;
     }
 
@@ -136,10 +161,10 @@ public sealed class PortalService
 
     private Task SaveEnrollment(DirectoryUser u, Enrollment e, CancellationToken ct) => _ad.WriteAsync(u, _codec.Encode(e, u.Sid), ct);
 
-    public object EnrollmentStatus(Enrollment e)
+    public object EnrollmentStatus(Enrollment e, SessionData? s = null)
     {
         var methods = new List<object>();
-        if (e.Methods.Contains(VerificationMethod.Totp)) methods.Add(new { method = "totp", destinationMasked = "App di autenticazione", verifiedAt = e.State.TotpVerifiedAt });
+        if (e.Methods.Contains(VerificationMethod.Totp)) methods.Add(new { method = "totp", destinationMasked = _t.Get("method.totp"), verifiedAt = e.State.TotpVerifiedAt });
         if (e.Methods.Contains(VerificationMethod.Sms)) methods.Add(new { method = "sms", destinationMasked = Masking.Phone(e.Mobile), verifiedAt = e.State.MobileVerifiedAt });
         if (e.Methods.Contains(VerificationMethod.Email)) methods.Add(new { method = "email", destinationMasked = Masking.Email(e.Email), verifiedAt = e.State.EmailVerifiedAt });
         return new
@@ -147,47 +172,180 @@ public sealed class PortalService
             minimumMethods = S.Verification.MinimumEnrolledMethods,
             enrolled = e.IsEnrolled(S.Verification.MinimumEnrolledMethods),
             methods,
-            availableMethods = AvailableMethods().Select(Name).ToArray(),
+            availableMethods = F.EnrollmentEnabled ? AvailableMethods().Select(Name).ToArray() : Array.Empty<string>(),
+            canRemove = F.EnrollmentEnabled && F.AllowMethodRemoval,
+            stepUpRequired = s is not null && StepUpNeeded(s, e),
+            firstEnrollmentBlocked = s is not null && e.Methods.Count == 0 && F.FirstEnrollmentRequiresWindowsLogin && !s.IsWindows,
+            changeEnabled = F.ChangeEnabled,
         };
     }
 
     public static string Name(VerificationMethod m) => m switch { VerificationMethod.Totp => "totp", VerificationMethod.Sms => "sms", _ => "email" };
 
-    public static VerificationMethod ParseMethod(string? m) => m?.ToLowerInvariant() switch
+    public VerificationMethod ParseMethod(string? m) => m?.ToLowerInvariant() switch
     {
         "totp" => VerificationMethod.Totp,
         "sms" => VerificationMethod.Sms,
         "email" => VerificationMethod.Email,
-        _ => throw new PortalException(400, "Metodo non valido."),
+        _ => throw Err(400, "err.methodInvalid"),
     };
 
     private IMessageChannel Channel(VerificationMethod m) => m == VerificationMethod.Sms ? _sms : _mail;
 
-    private string Company => string.IsNullOrWhiteSpace(S.General.CompanyName) ? "il portale password" : S.General.CompanyName;
-
-    /// <summary>Notifica su tutti i metodi verificati (escluso eventualmente il nuovo). Gli errori di invio non bloccano.</summary>
-    private async Task Notify(Enrollment e, string subject, string text, CancellationToken ct)
+    private string MethodLabel(VerificationMethod m, Enrollment? e = null, string? dest = null) => m switch
     {
-        var tasks = new List<Task>();
-        if (e.Methods.Contains(VerificationMethod.Email) && _mail.Configured) tasks.Add(_mail.SendAsync(e.Email!, subject, text, ct));
-        if (e.Methods.Contains(VerificationMethod.Sms) && _sms.Configured) tasks.Add(_sms.SendAsync(e.Mobile!, subject, subject + ": " + text, ct));
-        foreach (var t in tasks)
+        VerificationMethod.Totp => _t.Get("method.totp"),
+        VerificationMethod.Sms => _t.Get("method.sms") + " " + Masking.Phone(dest ?? e?.Mobile),
+        _ => _t.Get("method.email") + " " + Masking.Email(dest ?? e?.Email),
+    };
+
+    private bool NotificationEnabled(string name) => name switch
+    {
+        "methodAdded" => S.Notifications.MethodAdded,
+        "methodRemoved" => S.Notifications.MethodRemoved,
+        "passwordChanged" => S.Notifications.PasswordChanged,
+        "passwordReset" => S.Notifications.PasswordReset,
+        "accountUnlocked" => S.Notifications.AccountUnlocked,
+        "adminUnlock" => S.Notifications.AdminUnlock,
+        "adminClearEnrollment" => S.Notifications.AdminClearEnrollment,
+        "adminTemporaryReset" => S.Notifications.AdminTemporaryReset,
+        _ => true,
+    };
+
+    /// <summary>Notifica all'utente sui canali configurati. Gli errori di invio non bloccano l'operazione.</summary>
+    public async Task Notify(DirectoryUser u, Enrollment e, string name, CancellationToken ct, params (string, object?)[] extra)
+    {
+        if (!NotificationEnabled(name)) return;
+        var vars = new List<(string, object?)>
         {
-            try { await t.ConfigureAwait(false); }
-            catch (Exception ex) when (ex is not OperationCanceledException) { _log.LogWarning(ex, "Notifica non inviata"); }
+            ("user", u.SamAccountName), ("displayName", u.DisplayName ?? u.SamAccountName),
+            ("time", Now.ToLocalTime().ToString("dd/MM/yyyy HH:mm", System.Globalization.CultureInfo.InvariantCulture)),
+        };
+        vars.AddRange(extra);
+        var (subject, body, sms) = _t.Notification(name, vars.ToArray());
+        var n = S.Notifications;
+        var targets = new List<(IMessageChannel Ch, string To, string Text)>();
+        if (n.ViaPersonalEmail && e.Methods.Contains(VerificationMethod.Email) && _mail.Configured) targets.Add((_mail, e.Email!, body));
+        if (n.ViaSms && e.Methods.Contains(VerificationMethod.Sms) && _sms.Configured) targets.Add((_sms, e.Mobile!, sms));
+        if (n.ViaCorporateEmail && _mail.Configured)
+        {
+            try
+            {
+                var corp = await _ad.GetMailAsync(u, ct).ConfigureAwait(false);
+                if (!string.IsNullOrWhiteSpace(corp) && !targets.Any(t => string.Equals(t.To, corp, StringComparison.OrdinalIgnoreCase))) targets.Add((_mail, corp, body));
+            }
+            catch (System.Runtime.InteropServices.COMException ex) { _log.LogWarning(ex, "Email aziendale non leggibile"); }
         }
+        foreach (var (ch, to, text) in targets)
+        {
+            try { await ch.SendAsync(to, subject, text, ct).ConfigureAwait(false); }
+            catch (Exception ex) when (ex is not OperationCanceledException) { _log.LogWarning(ex, "Notifica {Name} non inviata", name); }
+        }
+    }
+
+    private async Task SendCode(VerificationMethod m, string destination, string code, string purpose, CancellationToken ct)
+    {
+        var (subject, body, sms) = _t.Notification("code", ("code", code), ("minutes", S.Verification.CodeLifetimeMinutes), ("purpose", _t.Get("notify.purpose." + purpose)));
+        try { await Channel(m).SendAsync(destination, subject, m == VerificationMethod.Sms ? sms : body, ct).ConfigureAwait(false); }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.LogError(ex, "Invio codice non riuscito");
+            await Audit(AuditEventId.Error, AuditOutcome.Failure, null, null, null, "Invio del codice non riuscito via " + Name(m)).ConfigureAwait(false);
+            throw Err(502, "err.sendFailed");
+        }
+    }
+
+    /// <summary>Invio in background: la risposta non dipende dai tempi del gateway (reset/sblocco, anti-enumerazione).</summary>
+    private void SendCodeInBackground(VerificationMethod m, string destination, string code, string purpose, string? user)
+    {
+        _ = Task.Run(async () =>
+        {
+            try { await SendCode(m, destination, code, purpose, CancellationToken.None).ConfigureAwait(false); }
+            catch (PortalException) { _log.LogWarning("Codice di {Purpose} non recapitato a {User}", purpose, user); }
+        });
+    }
+
+    // ------------------------------------------------------------------ conferma dell'identita' (step-up)
+
+    private bool StepUpNeeded(SessionData s, Enrollment e) =>
+        Usable(e).Count > 0 && !(s.StepUpUntil is { } until && until > Now);
+
+    private void RequireStepUp(SessionData s, Enrollment e)
+    {
+        if (StepUpNeeded(s, e)) throw Err(403, "err.stepUpRequired");
+    }
+
+    public async Task<object> StepUpChallenge(SessionData s, VerificationMethod m, string? ip, CancellationToken ct)
+    {
+        var u = await RequireManageableUser(s, ct).ConfigureAwait(false);
+        var (e, _) = await LoadEnrollment(u, ct).ConfigureAwait(false);
+        if (!Usable(e).Contains(m)) throw Err(400, "err.methodUnavailable");
+        if (m == VerificationMethod.Totp)
+        {
+            s.StepUpChallengeId = "totp";
+            return new { challengeId = "totp", method = "totp", destinationMasked = _t.Get("method.totp") };
+        }
+        Limit("codes:" + u.Sid, S.RateLimits.CodesPerUserPerHour, TimeSpan.FromHours(1), u.SamAccountName, ip);
+        var dest = m == VerificationMethod.Sms ? e.Mobile! : e.Email!;
+        var ch = _otp.Create(s.Id + "|" + u.Sid + "|stepup", Name(m), TimeSpan.FromMinutes(S.Verification.CodeLifetimeMinutes));
+        s.StepUpChallengeId = ch.Id;
+        await SendCode(m, dest, ch.Code, "stepup", ct).ConfigureAwait(false);
+        return new { challengeId = ch.Id, method = Name(m), destinationMasked = m == VerificationMethod.Sms ? Masking.Phone(dest) : Masking.Email(dest), expiresAt = ch.ExpiresAt };
+    }
+
+    public async Task<object> StepUpVerify(SessionData s, string? challengeId, string? code, string? ip, CancellationToken ct)
+    {
+        var u = await RequireManageableUser(s, ct).ConfigureAwait(false);
+        Limit("verify:" + u.Sid, S.RateLimits.PerUserPerHour * 3, TimeSpan.FromHours(1), u.SamAccountName, ip);
+        if (string.IsNullOrEmpty(challengeId) || s.StepUpChallengeId != challengeId) throw Err(400, "err.codeRequestNew");
+        var (e, _) = await LoadEnrollment(u, ct).ConfigureAwait(false);
+        var ok = false;
+        if (challengeId == "totp")
+        {
+            if (Usable(e).Contains(VerificationMethod.Totp))
+            {
+                var step = Totp.Verify(e.TotpSecret!, code, Now, e.State.LastTotpStep, S.Verification.TotpWindowSteps);
+                if (step is not null) { ok = true; await SaveEnrollment(u, e with { State = e.State with { LastTotpStep = step.Value } }, ct).ConfigureAwait(false); }
+            }
+        }
+        else
+        {
+            var r = _otp.Verify(challengeId, s.Id + "|" + u.Sid + "|stepup", code);
+            ok = r == OtpVerifyResult.Ok;
+            if (r is OtpVerifyResult.Expired or OtpVerifyResult.TooManyAttempts or OtpVerifyResult.NotFound) s.StepUpChallengeId = null;
+        }
+        if (!ok)
+        {
+            await Audit(AuditEventId.StepUpFailed, AuditOutcome.Failure, u.SamAccountName, null, ip, "Conferma dell'identita' non riuscita").ConfigureAwait(false);
+            throw Err(400, "err.codeInvalid");
+        }
+        s.StepUpChallengeId = null;
+        s.StepUpUntil = Now.AddMinutes(Math.Clamp(S.Sessions.StepUpMinutes, 1, 30));
+        await Audit(AuditEventId.StepUpVerified, AuditOutcome.Success, u.SamAccountName, null, ip, "Identita' confermata").ConfigureAwait(false);
+        return EnrollmentStatus(e, s);
     }
 
     // ------------------------------------------------------------------ registrazione
 
+    private async Task<(DirectoryUser U, Enrollment E)> BeginEnrollmentChange(SessionData s, CancellationToken ct)
+    {
+        RequireFeature(F.EnrollmentEnabled);
+        var u = await RequireManageableUser(s, ct).ConfigureAwait(false);
+        var (e, _) = await LoadEnrollment(u, ct).ConfigureAwait(false);
+        if (e.Methods.Count == 0 && F.FirstEnrollmentRequiresWindowsLogin && !s.IsWindows) throw Err(403, "err.windowsRequired");
+        if (F.StepUpForEnrollmentChanges) RequireStepUp(s, e);
+        return (u, e);
+    }
+
     public async Task<object> TotpStart(SessionData s, CancellationToken ct)
     {
-        var u = await RequireManageableUser(s, ct).ConfigureAwait(false);
-        if (!S.Verification.TotpEnabled) throw new PortalException(400, "Metodo non disponibile.");
+        var (u, _) = await BeginEnrollmentChange(s, ct).ConfigureAwait(false);
+        if (!S.Verification.TotpEnabled) throw Err(400, "err.methodUnavailable");
         s.PendingTotp = Totp.NewSecret();
         var account = u.UserPrincipalName ?? u.SamAccountName;
-        var uri = Totp.ProvisioningUri(s.PendingTotp, S.Verification.TotpIssuer, account);
-        return new { qrCodeSvg = QrSvg(uri), manualKey = Base32.Encode(s.PendingTotp), issuer = S.Verification.TotpIssuer, account };
+        var issuer = string.IsNullOrWhiteSpace(S.Verification.TotpIssuer) ? _t.Company : S.Verification.TotpIssuer;
+        var uri = Totp.ProvisioningUri(s.PendingTotp, issuer, account);
+        return new { qrCodeSvg = QrSvg(uri), manualKey = Base32.Encode(s.PendingTotp), issuer, account };
     }
 
     public static string QrSvg(string text)
@@ -199,79 +357,69 @@ public sealed class PortalService
 
     public async Task<object> TotpConfirm(SessionData s, string? code, string? ip, CancellationToken ct)
     {
-        var u = await RequireManageableUser(s, ct).ConfigureAwait(false);
-        if (s.PendingTotp is null) throw new PortalException(400, "Avviare prima la configurazione dell'app.");
+        var (u, e) = await BeginEnrollmentChange(s, ct).ConfigureAwait(false);
+        if (s.PendingTotp is null) throw Err(400, "err.totpStartFirst");
         Limit("verify:" + u.Sid, S.RateLimits.PerUserPerHour * 3, TimeSpan.FromHours(1), u.SamAccountName, ip);
-        var step = Totp.Verify(s.PendingTotp, code, Now, 0, S.Verification.TotpWindowSteps);
-        if (step is null) throw new PortalException(400, "Codice non valido: controllare l'ora del telefono e riprovare.");
-        var (e, _) = await LoadEnrollment(u, ct).ConfigureAwait(false);
-        var updated = e with { TotpSecret = s.PendingTotp, State = e.State with { TotpVerifiedAt = Now, LastTotpStep = step.Value, EnrolledAt = e.State.EnrolledAt ?? Now } };
+        var step = Totp.Verify(s.PendingTotp, code, Now, 0, S.Verification.TotpWindowSteps) ?? throw Err(400, "err.totpInvalid");
+        var updated = e with { TotpSecret = s.PendingTotp, State = e.State with { TotpVerifiedAt = Now, LastTotpStep = step, EnrolledAt = e.State.EnrolledAt ?? Now } };
         await SaveEnrollment(u, updated, ct).ConfigureAwait(false);
         s.PendingTotp = null;
         await Audit(AuditEventId.EnrollmentMethodAdded, AuditOutcome.Success, u.SamAccountName, null, ip, "Registrata l'app di autenticazione").ConfigureAwait(false);
-        await Notify(e, "Metodo di verifica aggiunto", $"Sul tuo account e' stata registrata un'app di autenticazione per {Company}. Se non sei stato tu, contatta subito l'help desk.", ct).ConfigureAwait(false);
-        return EnrollmentStatus(updated);
+        await Notify(u, e, "methodAdded", ct, ("method", _t.Get("method.totp"))).ConfigureAwait(false);
+        return EnrollmentStatus(updated, s);
     }
 
     public async Task<object> DestinationStart(SessionData s, VerificationMethod m, string? destination, string? ip, CancellationToken ct)
     {
-        var u = await RequireManageableUser(s, ct).ConfigureAwait(false);
-        if (!AvailableMethods().Contains(m) || m == VerificationMethod.Totp) throw new PortalException(400, "Metodo non disponibile.");
+        var (u, _) = await BeginEnrollmentChange(s, ct).ConfigureAwait(false);
+        if (!AvailableMethods().Contains(m) || m == VerificationMethod.Totp) throw Err(400, "err.methodUnavailable");
         var normalized = m == VerificationMethod.Sms ? Normalization.Phone(destination, S.General.DefaultCountryCode) : Normalization.Email(destination);
-        if (normalized is null) throw new PortalException(400, m == VerificationMethod.Sms ? "Numero di cellulare non valido." : "Indirizzo email non valido.");
-        if (m == VerificationMethod.Email && u.UserPrincipalName is not null && normalized.Equals(u.UserPrincipalName, StringComparison.OrdinalIgnoreCase))
-            throw new PortalException(400, "Indicare un indirizzo email personale, diverso da quello aziendale.");
-        Limit("codes:" + u.Sid, S.RateLimits.CodesPerUserPerHour, TimeSpan.FromHours(1), u.SamAccountName, ip);
-        var ch = _otp.Create(s.Id + "|" + u.Sid + "|enroll", Name(m), TimeSpan.FromMinutes(S.Verification.CodeLifetimeMinutes));
-        s.PendingChallengeId = ch.Id; s.PendingMethod = m; s.PendingDestination = normalized;
-        await SendCode(m, normalized, ch.Code, "registrazione", ct).ConfigureAwait(false);
-        return new { challengeId = ch.Id, destinationMasked = m == VerificationMethod.Sms ? Masking.Phone(normalized) : Masking.Email(normalized), expiresAt = ch.ExpiresAt };
-    }
-
-    private async Task SendCode(VerificationMethod m, string destination, string code, string purpose, CancellationToken ct)
-    {
-        var minutes = S.Verification.CodeLifetimeMinutes;
-        var text = $"Codice {Company} per {purpose}: {code}. Valido {minutes} minuti. Non comunicarlo a nessuno.";
-        try { await Channel(m).SendAsync(destination, $"Codice di verifica - {Company}", text, ct).ConfigureAwait(false); }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        if (normalized is null) throw Err(400, m == VerificationMethod.Sms ? "err.phoneInvalid" : "err.emailInvalid");
+        if (m == VerificationMethod.Email)
         {
-            _log.LogError(ex, "Invio codice non riuscito");
-            await Audit(AuditEventId.Error, AuditOutcome.Failure, null, null, null, "Invio del codice non riuscito via " + Name(m)).ConfigureAwait(false);
-            throw new PortalException(502, "Invio del codice non riuscito. Riprovare o usare un altro metodo.");
+            var corp = await _ad.GetMailAsync(u, ct).ConfigureAwait(false);
+            if ((u.UserPrincipalName is not null && normalized.Equals(u.UserPrincipalName, StringComparison.OrdinalIgnoreCase)) ||
+                (corp is not null && normalized.Equals(corp, StringComparison.OrdinalIgnoreCase)))
+                throw Err(400, "err.emailCorporate");
         }
+        Limit("codes:" + u.Sid, S.RateLimits.CodesPerUserPerHour, TimeSpan.FromHours(1), u.SamAccountName, ip);
+        var ch = _otp.Create(s.Id + "|" + u.Sid + "|enroll|" + Name(m), Name(m), TimeSpan.FromMinutes(S.Verification.CodeLifetimeMinutes));
+        s.PendingChallengeId = ch.Id; s.PendingMethod = m; s.PendingDestination = normalized;
+        await SendCode(m, normalized, ch.Code, "enroll", ct).ConfigureAwait(false);
+        return new { challengeId = ch.Id, destinationMasked = m == VerificationMethod.Sms ? Masking.Phone(normalized) : Masking.Email(normalized), expiresAt = ch.ExpiresAt };
     }
 
     public async Task<object> DestinationConfirm(SessionData s, VerificationMethod m, string? challengeId, string? code, string? ip, CancellationToken ct)
     {
-        var u = await RequireManageableUser(s, ct).ConfigureAwait(false);
+        var (u, e) = await BeginEnrollmentChange(s, ct).ConfigureAwait(false);
         if (s.PendingChallengeId is null || s.PendingChallengeId != challengeId || s.PendingMethod != m || s.PendingDestination is null)
-            throw new PortalException(400, "Richiedere un nuovo codice.");
-        var r = _otp.Verify(challengeId, s.Id + "|" + u.Sid + "|enroll", code);
+            throw Err(400, "err.codeRequestNew");
+        Limit("verify:" + u.Sid, S.RateLimits.PerUserPerHour * 3, TimeSpan.FromHours(1), u.SamAccountName, ip);
+        var r = _otp.Verify(challengeId, s.Id + "|" + u.Sid + "|enroll|" + Name(m), code);
         if (r != OtpVerifyResult.Ok)
         {
             if (r != OtpVerifyResult.Invalid) { s.PendingChallengeId = null; s.PendingDestination = null; }
-            throw new PortalException(400, r == OtpVerifyResult.Invalid ? "Codice non valido." : "Codice scaduto o troppi tentativi: richiederne uno nuovo.");
+            throw Err(400, r == OtpVerifyResult.Invalid ? "err.codeInvalid" : "err.codeExpired");
         }
-        var (e, _) = await LoadEnrollment(u, ct).ConfigureAwait(false);
         var dest = s.PendingDestination;
         var updated = m == VerificationMethod.Sms
             ? e with { Mobile = dest, State = e.State with { MobileVerifiedAt = Now, EnrolledAt = e.State.EnrolledAt ?? Now } }
             : e with { Email = dest, State = e.State with { EmailVerifiedAt = Now, EnrolledAt = e.State.EnrolledAt ?? Now } };
         await SaveEnrollment(u, updated, ct).ConfigureAwait(false);
         s.PendingChallengeId = null; s.PendingDestination = null; s.PendingMethod = null;
-        var label = m == VerificationMethod.Sms ? "cellulare " + Masking.Phone(dest) : "email " + Masking.Email(dest);
+        var label = MethodLabel(m, dest: dest);
         await Audit(AuditEventId.EnrollmentMethodAdded, AuditOutcome.Success, u.SamAccountName, null, ip, "Registrato " + label).ConfigureAwait(false);
-        await Notify(e, "Metodo di verifica aggiunto", $"Sul tuo account e' stato registrato il {label} per {Company}. Se non sei stato tu, contatta subito l'help desk.", ct).ConfigureAwait(false);
-        return EnrollmentStatus(updated);
+        // notifica sui metodi gia' presenti (il vecchio recapito, se sostituito, viene avvisato)
+        await Notify(u, e, "methodAdded", ct, ("method", label)).ConfigureAwait(false);
+        return EnrollmentStatus(updated, s);
     }
 
     public async Task<object> RemoveMethod(SessionData s, VerificationMethod m, string? ip, CancellationToken ct)
     {
-        var u = await RequireManageableUser(s, ct).ConfigureAwait(false);
-        var (e, _) = await LoadEnrollment(u, ct).ConfigureAwait(false);
-        if (!e.Methods.Contains(m)) return EnrollmentStatus(e);
-        if (e.Methods.Count - 1 < S.Verification.MinimumEnrolledMethods)
-            throw new PortalException(409, $"Servono almeno {S.Verification.MinimumEnrolledMethods} metodi: aggiungerne un altro prima di rimuovere questo.");
+        var (u, e) = await BeginEnrollmentChange(s, ct).ConfigureAwait(false);
+        if (!F.AllowMethodRemoval) throw Err(403, "err.removalDisabled");
+        if (!e.Methods.Contains(m)) return EnrollmentStatus(e, s);
+        if (e.Methods.Count - 1 < S.Verification.MinimumEnrolledMethods) throw Err(409, "err.minMethods", ("min", S.Verification.MinimumEnrolledMethods));
         var updated = m switch
         {
             VerificationMethod.Totp => e with { TotpSecret = null, State = e.State with { TotpVerifiedAt = null } },
@@ -280,8 +428,8 @@ public sealed class PortalService
         };
         await SaveEnrollment(u, updated, ct).ConfigureAwait(false);
         await Audit(AuditEventId.EnrollmentMethodRemoved, AuditOutcome.Success, u.SamAccountName, null, ip, "Rimosso il metodo " + Name(m)).ConfigureAwait(false);
-        await Notify(e, "Metodo di verifica rimosso", $"Dal tuo account e' stato rimosso un metodo di verifica ({Name(m)}) di {Company}. Se non sei stato tu, contatta subito l'help desk.", ct).ConfigureAwait(false);
-        return EnrollmentStatus(updated);
+        await Notify(u, e, "methodRemoved", ct, ("method", MethodLabel(m, e))).ConfigureAwait(false);
+        return EnrollmentStatus(updated, s);
     }
 
     // ------------------------------------------------------------------ password
@@ -293,16 +441,26 @@ public sealed class PortalService
         if (errors.Count == 0 && password is not null && S.Passwords.BreachedCheck != BreachedCheckMode.Off)
         {
             var r = await _breach.CheckAsync(password, ct).ConfigureAwait(false);
-            if (r == BreachCheckResult.Breached) errors.Add("Questa password compare in elenchi di password rubate: sceglierne un'altra.");
-            if (r == BreachCheckResult.Unknown && S.Passwords.BlockWhenBreachCheckUnavailable) errors.Add("Verifica delle password compromesse non disponibile: riprovare piu' tardi.");
+            if (r == BreachCheckResult.Breached) errors.Add(_t.Get("err.pwdBreached"));
+            if (r == BreachCheckResult.Unknown && S.Passwords.BlockWhenBreachCheckUnavailable) errors.Add(_t.Get("err.pwdBreachUnavailable"));
         }
         return errors;
     }
 
-    public async Task<object> CheckPasswordForSession(SessionData s, Flow? flow, string? password, CancellationToken ct)
+    /// <summary>
+    /// Verifica dal vivo. Le regole del singolo utente (PSO) si usano solo per una sessione autenticata o per un flusso gia' verificato:
+    /// prima della verifica la risposta e' identica per tutti (niente indizi sull'esistenza dell'account).
+    /// </summary>
+    public async Task<object> CheckPasswordForSession(SessionData s, string? flowId, string? password, string? ip, CancellationToken ct)
     {
+        Limit("check:" + s.Id, 120, TimeSpan.FromHours(1), null, ip);
+        if (password is { Length: > 256 }) password = password[..256];
         DirectoryUser? u = null;
-        if (flow is not null && !flow.Fake && flow.UserSid is not null) u = await _ad.FindUserBySidAsync(flow.UserSid, ct).ConfigureAwait(false);
+        if (!string.IsNullOrEmpty(flowId))
+        {
+            var f = GetFlow(s, flowId);
+            if (f.Ready) u = await _ad.FindUserBySidAsync(f.UserSid!, ct).ConfigureAwait(false);
+        }
         else if (s.Authenticated) u = await _ad.FindUserBySidAsync(s.UserSid!, ct).ConfigureAwait(false);
         if (u is null)
         {
@@ -314,65 +472,34 @@ public sealed class PortalService
         return new { valid = e2.Count == 0, errors = e2, minLength = rules.MinLength };
     }
 
-    /// <summary>Codice per confermare il cambio password su un metodo registrato.</summary>
-    public async Task<object> ChangeChallenge(SessionData s, VerificationMethod m, string? ip, CancellationToken ct)
+    public async Task ChangePassword(SessionData s, string? current, string? newPassword, string? ip, CancellationToken ct)
     {
-        var u = await RequireManageableUser(s, ct).ConfigureAwait(false);
-        var (e, _) = await LoadEnrollment(u, ct).ConfigureAwait(false);
-        if (!e.Methods.Contains(m) || m == VerificationMethod.Totp) throw new PortalException(400, "Metodo non disponibile.");
-        Limit("codes:" + u.Sid, S.RateLimits.CodesPerUserPerHour, TimeSpan.FromHours(1), u.SamAccountName, ip);
-        var dest = m == VerificationMethod.Sms ? e.Mobile! : e.Email!;
-        var ch = _otp.Create(s.Id + "|" + u.Sid + "|change", Name(m), TimeSpan.FromMinutes(S.Verification.CodeLifetimeMinutes));
-        await SendCode(m, dest, ch.Code, "il cambio password", ct).ConfigureAwait(false);
-        return new { challengeId = ch.Id, destinationMasked = m == VerificationMethod.Sms ? Masking.Phone(dest) : Masking.Email(dest), expiresAt = ch.ExpiresAt };
-    }
-
-    public async Task ChangePassword(SessionData s, string? current, string? newPassword, string? challengeId, string? code, string? ip, CancellationToken ct)
-    {
+        RequireFeature(F.ChangeEnabled);
         var u = await RequireManageableUser(s, ct).ConfigureAwait(false);
         Limit("change:" + u.Sid, S.RateLimits.PerUserPerHour, TimeSpan.FromHours(1), u.SamAccountName, ip);
-        if (string.IsNullOrEmpty(current) || string.IsNullOrEmpty(newPassword)) throw new PortalException(400, "Compilare tutti i campi.");
+        if (string.IsNullOrEmpty(current) || string.IsNullOrEmpty(newPassword)) throw Err(400, "err.fieldsRequired");
         var (e, _) = await LoadEnrollment(u, ct).ConfigureAwait(false);
-        if (S.Verification.ChangeRequiresVerification && e.Methods.Count > 0)
-        {
-            var ok = false;
-            if (string.Equals(challengeId, "totp", StringComparison.OrdinalIgnoreCase) && e.Methods.Contains(VerificationMethod.Totp))
-            {
-                var step = Totp.Verify(e.TotpSecret!, code, Now, e.State.LastTotpStep, S.Verification.TotpWindowSteps);
-                if (step is not null) { ok = true; e = e with { State = e.State with { LastTotpStep = step.Value } }; await SaveEnrollment(u, e, ct).ConfigureAwait(false); }
-            }
-            else if (!string.IsNullOrEmpty(challengeId))
-            {
-                ok = _otp.Verify(challengeId, s.Id + "|" + u.Sid + "|change", code) == OtpVerifyResult.Ok;
-            }
-            if (!ok) throw new PortalException(400, "Codice di verifica non valido.");
-        }
+        if (S.Verification.ChangeRequiresVerification) RequireStepUp(s, e);
         var errors = await CheckPassword(u, newPassword, ct).ConfigureAwait(false);
-        if (errors.Count > 0) throw new PortalException(400, "La nuova password non rispetta i requisiti.", errors);
+        if (errors.Count > 0) throw new PortalException(400, _t.Get("err.pwdRequirements"), errors, code: "err.pwdRequirements");
         var r = await _ad.ChangePasswordAsync(u, current, newPassword, ct).ConfigureAwait(false);
         if (r != PasswordOperationResult.Ok)
         {
             await Audit(AuditEventId.PasswordChangeFailed, AuditOutcome.Failure, u.SamAccountName, null, ip, "Cambio password non riuscito: " + r).ConfigureAwait(false);
             throw r switch
             {
-                PasswordOperationResult.WrongCurrentPassword => new PortalException(400, "La password attuale non e' corretta."),
-                PasswordOperationResult.PolicyViolation => new PortalException(400, "Active Directory ha rifiutato la password: potrebbe essere gia' stata usata di recente o essere stata cambiata da troppo poco tempo."),
-                PasswordOperationResult.AccountLocked => new PortalException(400, "L'account e' bloccato: usare la funzione di sblocco."),
-                _ => new PortalException(500, "Cambio password non riuscito. Riprovare o contattare l'help desk."),
+                PasswordOperationResult.WrongCurrentPassword => Err(400, "err.wrongCurrent"),
+                PasswordOperationResult.PolicyViolation => Err(400, "err.adRejectedChange"),
+                PasswordOperationResult.AccountLocked => Err(400, "err.accountLocked"),
+                _ => Err(500, "err.changeFailed"),
             };
         }
+        s.StepUpUntil = null;
         await Audit(AuditEventId.PasswordChanged, AuditOutcome.Success, u.SamAccountName, null, ip, "Password cambiata").ConfigureAwait(false);
-        await Notify(e, "Password cambiata", $"La password del tuo account ({u.SamAccountName}) e' stata cambiata dal portale {Company}. Se non sei stato tu, contatta subito l'help desk.", ct).ConfigureAwait(false);
+        await Notify(u, e, "passwordChanged", ct).ConfigureAwait(false);
     }
 
     // ------------------------------------------------------------------ reset e sblocco
-
-    public static async Task ConstantTime(DateTimeOffset start, TimeProvider time)
-    {
-        var elapsed = time.GetUtcNow() - start;
-        var jitter = TimeSpan.FromMilliseconds(RandomNumberGenerator.GetInt32(0, 200));
-        if (elapsed < MinResponse + jitter) await Task.Delay(MinResponse + jitter - elapsed).ConfigureAwait(false);
-    }
 
     private static string NewId() => Convert.ToBase64String(RandomNumberGenerator.GetBytes(18)).Replace('+', '-').Replace('/', '_');
 
@@ -384,14 +511,20 @@ public sealed class PortalService
         verificationsRequired = f.Required,
         verificationsDone = f.Fake ? Math.Min(f.Done, Math.Max(0, f.Required - 1)) : f.Done,
         methods = f.Methods.Select(m => new { methodId = m.Id, method = Name(m.Method), destinationMasked = m.Masked, used = m.Used }).ToArray(),
-        currentChallenge = f.CurrentChallengeId is null ? null : new { challengeId = f.CurrentChallengeId, destinationMasked = f.Methods.First(m => m.Id == f.CurrentMethodId).Masked, expiresAt = f.CurrentChallengeExpires },
+        currentChallenge = f.CurrentChallengeId is null ? null : new
+        {
+            challengeId = f.CurrentChallengeId,
+            method = Name(f.Methods.First(m => m.Id == f.CurrentMethodId).Method),
+            destinationMasked = f.Methods.First(m => m.Id == f.CurrentMethodId).Masked,
+            expiresAt = f.CurrentChallengeExpires,
+        },
         readyToComplete = f.Ready,
     };
 
     public Flow GetFlow(SessionData s, string flowId)
     {
-        if (!_flows.TryGetValue(flowId, out var f) || f.SessionId != s.Id || Now >= f.ExpiresAt)
-            throw new PortalException(400, "Sessione scaduta: ricominciare.");
+        if (flowId.Length > 64 || !_flows.TryGetValue(flowId, out var f) || f.SessionId != s.Id || Now >= f.ExpiresAt)
+            throw Err(400, "err.flowExpired");
         return f;
     }
 
@@ -405,10 +538,14 @@ public sealed class PortalService
         var start = Now;
         try
         {
-            if (purpose is not ("reset" or "unlock")) throw new PortalException(400, "Operazione non valida.");
+            if (purpose is not ("reset" or "unlock")) throw Err(400, "err.operationInvalid");
+            RequireFeature(purpose == "reset" ? F.ResetEnabled : F.UnlockEnabled);
+            LimitGlobal(ip);
             var name = Normalization.UserName(userName);
-            if (name is null) throw new PortalException(400, "Inserire il nome utente.");
+            if (name is null) throw Err(400, "err.userRequired");
             Limit("start:" + name.ToLowerInvariant(), S.RateLimits.PerUserPerHour, TimeSpan.FromHours(1), name, ip);
+            // un solo flusso attivo per sessione
+            foreach (var kv in _flows) if (kv.Value.SessionId == s.Id) _flows.TryRemove(kv.Key, out _);
 
             DirectoryUser? u = null;
             try { u = await _ad.FindUserAsync(name, ct).ConfigureAwait(false); }
@@ -416,6 +553,7 @@ public sealed class PortalService
 
             Enrollment? e = null;
             var reason = "utente non trovato";
+            var verifications = Math.Max(1, purpose == "reset" ? S.Verification.ResetVerifications : S.Verification.UnlockVerifications);
             if (u is not null)
             {
                 var p = AccountProtection.Evaluate(u, Scope);
@@ -428,53 +566,48 @@ public sealed class PortalService
                 else
                 {
                     var (en, _) = await LoadEnrollment(u, ct).ConfigureAwait(false);
-                    var required = purpose == "reset" ? S.Verification.ResetVerifications : S.Verification.UnlockVerifications;
-                    if (en.Methods.Count >= Math.Max(1, required)) e = en;
-                    else reason = "non registrato";
+                    if (Usable(en).Count >= verifications) e = en;
+                    else reason = "metodi registrati insufficienti";
                 }
             }
 
-            var verifications = purpose == "reset" ? S.Verification.ResetVerifications : S.Verification.UnlockVerifications;
             Flow f;
             if (e is not null && u is not null)
             {
-                var methods = new List<FlowMethod>();
-                foreach (var m in e.Methods)
+                var methods = Usable(e).Select(m => new FlowMethod
                 {
-                    methods.Add(new FlowMethod
-                    {
-                        Id = NewId(), Method = m,
-                        Masked = m switch { VerificationMethod.Totp => "App di autenticazione", VerificationMethod.Sms => Masking.Phone(e.Mobile), _ => Masking.Email(e.Email) },
-                        Destination = m switch { VerificationMethod.Sms => e.Mobile, VerificationMethod.Email => e.Email, _ => null },
-                    });
-                }
-                f = new Flow { Id = NewId(), SessionId = s.Id, Purpose = purpose, ExpiresAt = Now.AddMinutes(S.Verification.FlowSessionMinutes), Required = Math.Max(1, verifications), Methods = methods, UserSid = u.Sid, UserName = u.SamAccountName };
+                    Id = NewId(), Method = m,
+                    Masked = m switch { VerificationMethod.Totp => _t.Get("method.totp"), VerificationMethod.Sms => Masking.Phone(e.Mobile), _ => Masking.Email(e.Email) },
+                    Destination = m switch { VerificationMethod.Sms => e.Mobile, VerificationMethod.Email => e.Email, _ => null },
+                }).ToList();
+                f = new Flow { Id = NewId(), SessionId = s.Id, Purpose = purpose, ExpiresAt = Now.AddMinutes(S.Verification.FlowSessionMinutes), Required = verifications, Methods = methods, UserSid = u.Sid, UserName = u.SamAccountName };
                 await Audit(AuditEventId.ResetRequested, AuditOutcome.Success, u.SamAccountName, null, ip, $"Richiesta di {purpose}").ConfigureAwait(false);
             }
             else
             {
                 f = FakeFlow(s, name, purpose, verifications);
-                await Audit(AuditEventId.ResetRequested, AuditOutcome.Blocked, name, null, ip, $"Richiesta di {purpose} non eseguibile ({reason})").ConfigureAwait(false);
+                await Audit(AuditEventId.ResetBlocked, AuditOutcome.Blocked, name, null, ip, $"Richiesta di {purpose} non eseguibile ({reason})").ConfigureAwait(false);
             }
             _flows[f.Id] = f;
             return FlowDto(f);
         }
-        finally { await ConstantTime(start, _time).ConfigureAwait(false); }
+        finally { await ConstantTime(start).ConfigureAwait(false); }
     }
 
     /// <summary>Flusso indistinguibile da uno reale (metodi mascherati stabili per lo stesso nome), che non puo' mai completarsi.</summary>
     private Flow FakeFlow(SessionData s, string name, string purpose, int verifications)
     {
         var h = HMACSHA256.HashData(_fakeKey, Encoding.UTF8.GetBytes(name.ToLowerInvariant()));
+        var available = AvailableMethods();
         var methods = new List<FlowMethod>();
-        if ((h[0] & 1) == 0 && S.Verification.TotpEnabled) methods.Add(new FlowMethod { Id = NewId(), Method = VerificationMethod.Totp, Masked = "App di autenticazione" });
-        if (S.Verification.SmsEnabled) methods.Add(new FlowMethod { Id = NewId(), Method = VerificationMethod.Sms, Masked = $"+{S.General.DefaultCountryCode} *** *** {h[1] % 10}{h[2] % 10}{h[3] % 10}" });
-        if (S.Verification.EmailEnabled)
+        if (available.Contains(VerificationMethod.Totp) && ((h[0] & 1) == 0 || available.Count <= verifications)) methods.Add(new FlowMethod { Id = NewId(), Method = VerificationMethod.Totp, Masked = _t.Get("method.totp") });
+        if (available.Contains(VerificationMethod.Sms)) methods.Add(new FlowMethod { Id = NewId(), Method = VerificationMethod.Sms, Masked = $"+{S.General.DefaultCountryCode} *** *** {h[1] % 10}{h[2] % 10}{h[3] % 10}" });
+        if (available.Contains(VerificationMethod.Email))
         {
             var domains = new[] { "g***.com", "h***.it", "l***.it", "o***.com", "y***.com", "i***.it" };
             methods.Add(new FlowMethod { Id = NewId(), Method = VerificationMethod.Email, Masked = $"{(char)('a' + h[4] % 26)}***@{domains[h[5] % domains.Length]}" });
         }
-        return new Flow { Id = NewId(), SessionId = s.Id, Purpose = purpose, ExpiresAt = Now.AddMinutes(S.Verification.FlowSessionMinutes), Required = Math.Max(1, Math.Min(verifications, methods.Count)), Methods = methods, Fake = true, UserName = name };
+        return new Flow { Id = NewId(), SessionId = s.Id, Purpose = purpose, ExpiresAt = Now.AddMinutes(S.Verification.FlowSessionMinutes), Required = verifications, Methods = methods, Fake = true, UserName = name };
     }
 
     public async Task<object> FlowChallenge(SessionData s, string flowId, string? methodId, string? ip, CancellationToken ct)
@@ -483,7 +616,7 @@ public sealed class PortalService
         try
         {
             var f = GetFlow(s, flowId);
-            var m = f.Methods.FirstOrDefault(x => x.Id == methodId && !x.Used) ?? throw new PortalException(400, "Metodo non valido.");
+            var m = f.Methods.FirstOrDefault(x => x.Id == methodId && !x.Used) ?? throw Err(400, "err.methodInvalid");
             Limit("codes:" + (f.UserSid ?? f.UserName), S.RateLimits.CodesPerUserPerHour, TimeSpan.FromHours(1), f.UserName, ip);
             f.CurrentMethodId = m.Id;
             if (m.Method == VerificationMethod.Totp)
@@ -496,11 +629,15 @@ public sealed class PortalService
                 var ch = _otp.Create(s.Id + "|" + f.Id + "|" + m.Id, Name(m.Method), TimeSpan.FromMinutes(S.Verification.CodeLifetimeMinutes));
                 f.CurrentChallengeId = ch.Id;
                 f.CurrentChallengeExpires = ch.ExpiresAt;
-                if (!f.Fake) await SendCode(m.Method, m.Destination!, ch.Code, f.Purpose == "reset" ? "il reset della password" : "lo sblocco dell'account", ct).ConfigureAwait(false);
+                if (!f.Fake)
+                {
+                    if (F.BackgroundCodeDelivery) SendCodeInBackground(m.Method, m.Destination!, ch.Code, f.Purpose, f.UserName);
+                    else await SendCode(m.Method, m.Destination!, ch.Code, f.Purpose, ct).ConfigureAwait(false);
+                }
             }
             return FlowDto(f);
         }
-        finally { await ConstantTime(start, _time).ConfigureAwait(false); }
+        finally { await ConstantTime(start).ConfigureAwait(false); }
     }
 
     public async Task<object> FlowVerify(SessionData s, string flowId, string? code, string? ip, CancellationToken ct)
@@ -509,14 +646,14 @@ public sealed class PortalService
         try
         {
             var f = GetFlow(s, flowId);
-            var m = f.Methods.FirstOrDefault(x => x.Id == f.CurrentMethodId) ?? throw new PortalException(400, "Scegliere prima un metodo.");
+            var m = f.Methods.FirstOrDefault(x => x.Id == f.CurrentMethodId) ?? throw Err(400, "err.chooseMethod");
             Limit("verify:" + (f.UserSid ?? f.UserName), S.RateLimits.PerUserPerHour * 3, TimeSpan.FromHours(1), f.UserName, ip);
             var ok = false;
             if (!f.Fake)
             {
                 if (m.Method == VerificationMethod.Totp)
                 {
-                    var u = await _ad.FindUserBySidAsync(f.UserSid!, ct).ConfigureAwait(false) ?? throw new PortalException(400, "Sessione scaduta: ricominciare.");
+                    var u = await _ad.FindUserBySidAsync(f.UserSid!, ct).ConfigureAwait(false) ?? throw Err(400, "err.flowExpired");
                     var (e, _) = await LoadEnrollment(u, ct).ConfigureAwait(false);
                     if (e.TotpSecret is not null)
                     {
@@ -537,41 +674,42 @@ public sealed class PortalService
                 if (f.Failures >= S.Verification.CodeMaxAttempts)
                 {
                     _flows.TryRemove(f.Id, out _);
-                    throw new PortalException(400, "Troppi codici errati: ricominciare.");
+                    throw Err(400, "err.tooManyCodes");
                 }
-                throw new PortalException(400, "Codice non valido.");
+                throw Err(400, "err.codeInvalid");
             }
             m.Used = true;
             f.CurrentMethodId = null;
             f.CurrentChallengeId = null;
             return FlowDto(f);
         }
-        finally { await ConstantTime(start, _time).ConfigureAwait(false); }
+        finally { await ConstantTime(start).ConfigureAwait(false); }
     }
 
     public async Task FlowComplete(SessionData s, string flowId, string? newPassword, string? ip, CancellationToken ct)
     {
         var f = GetFlow(s, flowId);
-        if (!f.Ready) throw new PortalException(403, "Verifica dell'identita' non completata.");
-        var u = await _ad.FindUserBySidAsync(f.UserSid!, ct).ConfigureAwait(false) ?? throw new PortalException(400, "Sessione scaduta: ricominciare.");
-        if (!AccountProtection.Evaluate(u, Scope).Manageable) throw new PortalException(403, "Operazione non consentita.");
+        if (!f.Ready) throw Err(403, "err.notVerified");
+        RequireFeature(f.Purpose == "reset" ? F.ResetEnabled : F.UnlockEnabled);
+        var u = await _ad.FindUserBySidAsync(f.UserSid!, ct).ConfigureAwait(false) ?? throw Err(400, "err.flowExpired");
+        if (!AccountProtection.Evaluate(u, Scope).Manageable || !u.Enabled) throw Err(403, "err.notAllowed");
         var (e, _) = await LoadEnrollment(u, ct).ConfigureAwait(false);
         if (f.Purpose == "reset")
         {
+            Limit("complete:" + u.Sid, S.RateLimits.PerUserPerHour, TimeSpan.FromHours(1), u.SamAccountName, ip);
             var errors = await CheckPassword(u, newPassword, ct).ConfigureAwait(false);
-            if (errors.Count > 0) throw new PortalException(400, "La nuova password non rispetta i requisiti.", errors);
-            var r = await _ad.ResetPasswordAsync(u, newPassword!, false, ct).ConfigureAwait(false);
+            if (errors.Count > 0) throw new PortalException(400, _t.Get("err.pwdRequirements"), errors, code: "err.pwdRequirements");
+            var target = F.ResetUnlocksAccount ? u : u with { LockedOut = false };
+            var r = await _ad.ResetPasswordAsync(target, newPassword!, F.ResetForcesChangeAtNextLogon, ct).ConfigureAwait(false);
             if (r != PasswordOperationResult.Ok)
             {
                 await Audit(AuditEventId.Error, AuditOutcome.Failure, u.SamAccountName, null, ip, "Reset non riuscito: " + r).ConfigureAwait(false);
-                throw r == PasswordOperationResult.PolicyViolation
-                    ? new PortalException(400, "Active Directory ha rifiutato la password (cronologia o requisiti): sceglierne un'altra.")
-                    : new PortalException(500, "Reset non riuscito. Contattare l'help desk.");
+                throw r == PasswordOperationResult.PolicyViolation ? Err(400, "err.adRejectedReset") : Err(500, "err.resetFailed");
             }
             await SaveEnrollment(u, e with { State = e.State with { LastResetAt = Now } }, ct).ConfigureAwait(false);
             _flows.TryRemove(f.Id, out _);
             await Audit(AuditEventId.PasswordReset, AuditOutcome.Success, u.SamAccountName, null, ip, $"Password reimpostata con {f.Done} verifiche").ConfigureAwait(false);
-            await Notify(e, "Password reimpostata", $"La password del tuo account ({u.SamAccountName}) e' stata reimpostata dal portale {Company}. Se non sei stato tu, contatta subito l'help desk.", ct).ConfigureAwait(false);
+            await Notify(u, e, "passwordReset", ct).ConfigureAwait(false);
         }
         else
         {
@@ -579,11 +717,11 @@ public sealed class PortalService
             if (r != PasswordOperationResult.Ok)
             {
                 await Audit(AuditEventId.UnlockFailed, AuditOutcome.Failure, u.SamAccountName, null, ip, "Sblocco non riuscito: " + r).ConfigureAwait(false);
-                throw new PortalException(500, "Sblocco non riuscito. Contattare l'help desk.");
+                throw Err(500, "err.unlockFailed");
             }
             _flows.TryRemove(f.Id, out _);
             await Audit(AuditEventId.AccountUnlocked, AuditOutcome.Success, u.SamAccountName, null, ip, "Account sbloccato dall'utente").ConfigureAwait(false);
-            await Notify(e, "Account sbloccato", $"Il tuo account ({u.SamAccountName}) e' stato sbloccato dal portale {Company}. Se non sei stato tu, contatta subito l'help desk.", ct).ConfigureAwait(false);
+            await Notify(u, e, "accountUnlocked", ct).ConfigureAwait(false);
         }
     }
 }

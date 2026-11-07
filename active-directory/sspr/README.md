@@ -1,6 +1,6 @@
 # sspr — Self Service Password Reset (on-prem)
 
-> **Versione 0.2.0** — motore, servizio web, portale utenti, pannello di amministrazione e installer guidato scritti. **Mai compilato né eseguito finora**: la prima verifica reale è la pipeline GitHub Actions, poi un'installazione di prova in laboratorio. Su richiesta, il progetto vive qui in `fispas/tools`, anche se è un'applicazione web.
+> **Versione 0.3.0** — motore, servizio web, portale utenti, pannello di amministrazione completamente personalizzabile e installer guidato scritti. **Mai compilato né eseguito finora**: la prima verifica reale è la pipeline GitHub Actions, poi un'installazione di prova in laboratorio. Su richiesta, il progetto vive qui in `fispas/tools`, anche se è un'applicazione web.
 
 ## Installazione rapida
 
@@ -31,12 +31,35 @@ Lo stato della procedura (senza segreti) è salvato in `%ProgramData%\FispaSSPR\
 - **Ripristino della chiave** su un nuovo server: `FispaSSPR.exe restore --sid <SID gMSA> --backup <file>` (chiede la password del backup).
 - **Accesso automatico** dai PC di dominio: aggiungere l'indirizzo del portale alla zona Intranet via GPO.
 
+## Personalizzazione (pannello → Configurazione)
+
+Tutto si cambia dal pannello, senza riavvio e senza toccare file. Ogni sezione si può esportare e importare (JSON senza password) per riusarla su altri ambienti.
+
+| Sezione | Cosa si personalizza |
+|---|---|
+| **Generale** | Nome azienda, titolo e sottotitolo del portale, indirizzo pubblicato, contatto help desk, collegamento alla guida, prefisso telefonico predefinito, **avviso in evidenza** (informazione / attenzione / importante) |
+| **Aspetto** | **Logo**, **icona della scheda**, **immagine di sfondo** (caricati dal pannello, formato riconosciuto dai byte, SVG con script o riferimenti esterni rifiutati), 10 colori (principale, sfondi, testi, intestazione, esiti), carattere, arrotondamenti, altezza del logo, nome azienda in intestazione sì/no, **CSS personalizzato** (senza @import, URL esterni o script) |
+| **Testi** | **Ogni testo** del portale e ogni messaggio di errore (174 voci in catalogo, con ricerca, filtro per sezione, "solo personalizzati", ripristino del predefinito). Segnaposto `{company}`, `{helpdesk}`, `{portalUrl}` e quelli specifici di ogni testo |
+| **Notifiche** | Attivazione per evento (metodo aggiunto/rimosso, password cambiata/reimpostata, sblocco, azioni dell'help desk), canali (email personale, SMS, email aziendale), **oggetto, testo email e testo SMS** di ogni notifica e del codice di verifica |
+| **Funzioni** | Reset, sblocco, cambio password, registrazione autonoma, rimozione dei metodi, verifica dal vivo della password, accesso Windows / con password, prima registrazione solo da PC aziendale, conferma con metodo esistente per modificare i metodi, comportamento del reset (sblocca, cambio obbligatorio, invio codici in background), azioni consentite all'help desk, reset con password temporanea |
+| **Verifica e password** | Metodi attivi, minimi da registrare, verifiche per reset e sblocco, durata e tentativi dei codici, tolleranza TOTP, nome nell'app, lunghezza minima, parole vietate, password compromesse (online k-anonymity / lista locale / no) |
+| **Sicurezza** | Limiti per utente, IP e globali, codici all'ora, durate di sessione utente e pannello, validità della conferma d'identità, tempo minimo di risposta, tentativi del secondo fattore, conservazione dell'audit |
+| **Email e SMS** | SMTP e gateway SMS con prova di invio |
+| **Directory** | Domain controller, OU abilitate, gruppi esclusi |
+| **Avanzate** | Configurazione completa in JSON, esporta/importa |
+
+Restano fuori dal pannello, per sicurezza, solo porta, certificato, gMSA, gruppi degli operatori e obbligo del secondo fattore per il pannello: si cambiano rieseguendo l'installer.
+
+I testi predefiniti stanno in `src/FispaSspr.Web/Texts/texts.it.json`, generato da `tools/gen-texts.py`.
+
 ## Struttura della cartella
 | Percorso | Contenuto |
 |---|---|
 | `src/FispaSspr.Core` | Motore indipendente da AD e dal web: cifratura AES-GCM, TOTP, codici monouso, limiti dei tentativi, protezione degli account, policy password e password compromesse, codec degli attributi, interfacce, configurazione |
 | `src/FispaSspr.Web` | Servizio Windows `FispaSSPR.exe` (Kestrel, self-contained): directory AD come gMSA, chiave master DPAPI-NG, SMTP/SMS, audit, sessioni, API, riga di comando (`init`, `restore`, `validate`, `version`) |
-| `src/FispaSspr.Web/wwwroot` | Portale utenti (`/`) e pannello di amministrazione (`/admin/`), HTML/JS senza dipendenze esterne |
+| `src/FispaSspr.Web/wwwroot` | Portale utenti (`/`) e pannello di amministrazione (`/admin/`), HTML/JS senza dipendenze esterne; tema generato in `/theme.css` |
+| `src/FispaSspr.Web/Texts` | Catalogo dei testi predefiniti (portale, errori, notifiche) |
+| `tools/gen-texts.py` | Generatore del catalogo dei testi |
 | `tests/FispaSspr.Core.Tests` | Test xUnit (vettori RFC 6238/4648, manomissioni, iniezione LDAP, account protetti...) |
 | `api/openapi.yaml` | Contratto API tra interfaccia web e motore |
 | `installer/Install-FispaSSPR.ps1` | Installazione guidata con GUI, aggiornamento, disinstallazione |
@@ -89,7 +112,7 @@ Classe ausiliaria `fispaSsprUser` aggiunta alla classe `user`, con gli attributi
 
 | Attributo | Tipo | Contenuto |
 |---|---|---|
-| `fispaSsprTotp` | ottetti | Segreto TOTP cifrato |
+| `fispaSsprTotp` | stringa | Segreto TOTP cifrato |
 | `fispaSsprMobile` | stringa | Cellulare verificato, cifrato |
 | `fispaSsprEmail` | stringa | Email secondaria verificata, cifrata |
 | `fispaSsprState` | stringa | JSON cifrato: data di registrazione, metodi verificati, ultimo reset, ultimo timestep TOTP usato (anti-replay) |
@@ -161,6 +184,12 @@ Classe ausiliaria `fispaSsprUser` aggiunta alla classe `user`, con gli attributi
   - controllo delle password compromesse con HIBP in k-anonymity: escono solo i primi 5 caratteri dell'hash, quindi serve l'uscita verso internet solo per quello. In alternativa una lista offline delle password più comuni;
   - parole vietate configurabili (nome azienda, nome utente);
   - mai registrate nei log né inviate.
+- **Conferma d'identità (step-up)**: con un utente già registrato, aggiungere, sostituire o rimuovere metodi e cambiare la password richiedono un codice da un metodo esistente: chi conosce solo la password non può sostituire i metodi. Opzionale: prima registrazione solo da PC aziendale (Windows).
+- **Verifica delle credenziali**: bind LDAP Kerberos firmato e cifrato più "Who am I": l'identità autenticata deve coincidere con l'utente (niente fallback su Guest).
+- **Anti-enumerazione**: flussi finti indistinguibili, tempi minimi di risposta configurabili, codici di reset inviati in background, regole delle password del singolo utente solo dopo la verifica.
+- **Sessioni**: identificativo e token CSRF nuovi a ogni login e logout, scadenza per inattività e assoluta, limite al numero di sessioni; sessione del pannello limitata nel tempo con ripetizione del secondo fattore e limite ai codici errati per operatore.
+- **Aspetto**: file caricati validati dai byte, serviti con CSP `sandbox`; nessun percorso di file arbitrario in configurazione; testi personalizzati sempre come testo semplice; CSS personalizzato filtrato; colori e carattere validati.
+- **Export CSV dell'audit** protetto dalla formula injection.
 - **Audit**: Registro eventi `SSPR` con ID documentati, utile anche alla futura dashboard di monitoraggio AD; notifiche all'utente per reset, sblocco e modifica dei metodi.
 
 ## Fasi di sviluppo
@@ -173,5 +202,6 @@ Classe ausiliaria `fispaSsprUser` aggiunta alla classe `user`, con gli attributi
 6. Documentazione utente e amministratore, pagina da distribuire agli utenti.
 
 ## Changelog
+- **0.3.0** — personalizzazione completa dal pannello (logo, icona, sfondo, colori, carattere, CSS, avviso, tutti i testi, notifiche per evento e canale, funzioni attivabili, impostazioni granulari, esporta/importa); editor della configurazione a schede al posto del JSON. Sicurezza: conferma d'identità per modifiche ai metodi e cambio password, prima registrazione solo da Windows (opzionale), verifica credenziali con LDAP "Who am I", rotazione della sessione al logout, scadenze di sessione utente e pannello, limite ai codici errati del secondo fattore, invio dei codici di reset in background, regole PSO solo dopo la verifica, solo oggetti utente da SID, file dell'aspetto validati, CSV senza formula injection, pulizia dell'audit, notifiche anche per le azioni dell'help desk (prima dell'azzeramento). `restore` chiede la password da console.
 - **0.2.0** — servizio web (`FispaSspr.Web`), portale utenti, pannello di amministrazione con 2FA operatori, installer guidato `Install-FispaSSPR.ps1` (gMSA, schema, deleghe, certificato, servizio), pacchetto pubblicato dalla CI.
 - **0.1.0** — motore `FispaSspr.Core`, test, schema AD, documentazione del formato cifrato e degli eventi, contratto API.
