@@ -5,6 +5,8 @@
 
     function Get-ToolDefaultConfig {
         [ordered]@{
+            Mode             = 'Fotografia'
+            DryRun           = $true
             DomainController = ''
             InactiveDays     = 90
             KrbtgtMaxDays    = 180
@@ -14,19 +16,64 @@
             ScanSysvolGpp    = $true
             OutputDir        = (Join-Path $env:ProgramData ('FispaTools\' + $Tool.Name + '\Report'))
             LogDir           = (Join-Path $env:ProgramData ('FispaTools\' + $Tool.Name + '\Log'))
+            # fase 2 - hardening
+            GpoPrefix              = 'FispaTools'
+            GpoLinkMode            = 'Collegata e attiva'
+            MemberHardeningOus     = @()
+            LmCompatibilityLevel   = 5
+            LdapChannelBinding     = 'Se supportato'
+            SecurityLogMaxMB       = 4096
+            StopSpoolerNow         = $true
+            DomainMinPasswordLength = 12
+            DomainLockoutThreshold = 10
+            DomainLockoutMinutes   = 15
+            AdminPsoMinLength      = 16
+            AdminPsoMaxAgeDays     = 365
+            ProtectedUsersMode     = 'Elenco'
+            ProtectedUsersList     = @()
+            BreakGlassAccounts     = @()
+            InactiveAction         = 'Disattiva'
+            QuarantineOu           = ''
+            InactiveExclude        = @()
+            InactiveSkipWithSpn    = $true
+            KrbtgtMinHours         = 24
+            LapsOus                = @()
+            LapsPasswordLength     = 20
+            LapsPasswordAgeDays    = 30
+            LapsAdminAccount       = ''
+            TierRootName           = 'Admin'
+            TierLinkGpos           = $false
         }
     }
 
     function Get-ToolPrereqIssues($Config) {
         $w = @()
         if (-not $env:USERDNSDOMAIN) { $w += 'Sessione non di dominio: eseguire da una macchina del dominio con un account di dominio.' }
+        if ([string]$Config.Mode -eq 'Hardening') {
+            foreach ($m in @('ActiveDirectory', 'GroupPolicy')) { if (-not (Get-Module -ListAvailable -Name $m)) { $w += "Hardening: modulo $m mancante (strumenti RSAT)." } }
+            $groups = @([System.Security.Principal.WindowsIdentity]::GetCurrent().Groups | ForEach-Object { $_.Value })
+            if (-not @($groups | Where-Object { $_ -match '-(512|519)$' }).Count) { $w += 'Hardening: l''account corrente non e'' Domain Admins ne'' Enterprise Admins: molte azioni non avranno i permessi.' }
+            if (-not $Config.DryRun) { $w += 'Hardening in ESECUZIONE REALE: le azioni selezionate modificano il dominio (backup dello stato precedente nella cartella dei report).' }
+        }
         $w
     }
 
     function Test-ToolConfig($Config, [switch]$Scan) {
         $e = @()
+        $hard = [string]$Config.Mode -eq 'Hardening'
+        # in fotografia lo strumento e' in sola lettura; in hardening vale la simulazione
+        $Tool.ReadOnly = -not $hard
         try { [void](Get-AdContext $Config) } catch { $e += "Dominio non raggiungibile: $($_.Exception.Message)" }
         if (-not $Scan -and -not $Config.OutputDir) { $e += 'Indicare la cartella dei report.' }
+        if ($hard) {
+            if ([string]$Config.GpoPrefix -notmatch '^[A-Za-z0-9 _.-]{2,40}$') { $e += 'Prefisso delle GPO non valido (2-40 caratteri: lettere, numeri, spazio, _ . -).' }
+            if ([string]$Config.TierRootName -notmatch '^[A-Za-z0-9 _-]{1,40}$') { $e += 'Nome dell''OU radice del tier model non valido.' }
+            if ([string]$Config.InactiveAction -eq 'Disattiva e sposta' -and -not $Config.QuarantineOu) { $e += 'Indicare l''OU di quarantena per gli account inattivi.' }
+            foreach ($ou in @(@($Config.MemberHardeningOus) + @($Config.LapsOus) + @($Config.QuarantineOu) | Where-Object { $_ })) {
+                if ($ou -notmatch '^(OU|CN)=.+,DC=') { $e += "OU non valida (serve il distinguished name): $ou" }
+            }
+            if ([int]$Config.LmCompatibilityLevel -lt 3 -or [int]$Config.LmCompatibilityLevel -gt 5) { $e += 'LmCompatibilityLevel: da 3 a 5.' }
+        }
         $e
     }
 
@@ -106,7 +153,7 @@
     function Get-GroupMembersRecursive($Config, [string]$GroupDn) {
         if (-not $GroupDn) { return @() }
         $f = '(&(objectCategory=person)(objectClass=user)(memberOf:1.2.840.113556.1.4.1941:={0}))' -f $GroupDn.Replace('\', '\5c').Replace('(', '\28').Replace(')', '\29').Replace('*', '\2a')
-        @(Search-Ldap $Config $f @('sAMAccountName', 'distinguishedName', 'userAccountControl', 'adminCount', 'pwdLastSet', 'lastLogonTimestamp', 'objectSid'))
+        @(Search-Ldap $Config $f @('sAMAccountName', 'distinguishedName', 'userAccountControl', 'adminCount', 'pwdLastSet', 'lastLogonTimestamp', 'objectSid', 'servicePrincipalName'))
     }
 
     function Get-ObjSid($o) {
@@ -464,6 +511,7 @@
     # ------------------------------------------------------------------ interfaccia verso la libreria
 
     function Get-ToolItems($Config) {
+        if ([string]$Config.Mode -eq 'Hardening') { return Get-HardItems $Config }
         $ctx = Get-AdContext $Config
         Write-ToolLog "Dominio $($ctx.Dns) - DC $($ctx.Dc)" 'STEP'
         foreach ($c in (Get-AdChecks)) {
@@ -484,6 +532,7 @@
     }
 
     function Invoke-ToolItem($Config, $Item) {
+        if ([string]$Config.Mode -eq 'Hardening') { return Invoke-HardItem $Config $Item }
         $c = @(Get-AdChecks | Where-Object { $_.Id -eq $Item.Id })[0]
         if (-not $c) { throw "Controllo sconosciuto: $($Item.Id)" }
         $r = & $c.Run $Config
@@ -502,6 +551,7 @@
 
     # Report HTML, JSON e CSV delle evidenze. Restituisce il percorso del report HTML
     function Complete-ToolRun($Config, $Results) {
+        if ([string]$Config.Mode -eq 'Hardening') { return Complete-HardRun $Config $Results }
         $ctx = Get-AdContext $Config
         $dir = [string]$Config.OutputDir
         New-Item -ItemType Directory -Path $dir -Force | Out-Null

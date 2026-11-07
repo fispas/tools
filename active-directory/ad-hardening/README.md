@@ -1,6 +1,6 @@
 # ad-hardening — Fotografia e hardening di Active Directory
 
-> **Stato:** fase 1 (fotografia) in sviluppo, versione 0.1.0 con 28 controlli. Fasi 2 e 3 da fare. Questo file raccoglie anche linee guida e decisioni.
+> **Stato:** versione 0.2.0 — fase 1 (fotografia, 28 controlli) e fase 2 (hardening, 38 azioni) nello stesso tool, da collaudare in laboratorio. Fase 3 (documentazione) da fare. Questo file raccoglie anche linee guida e decisioni.
 
 ## Uso della fase 1 — `Invoke-ADAssessment.ps1`
 
@@ -58,7 +58,33 @@ Prossimi controlli della fase 1:
 - logon degli account Tier 0;
 - confronto tra due fotografie.
 
-Sviluppo: sorgenti in `_src/` (controlli in `engine.ps1`, funzione `Get-AdChecks`), file generato con `python _lib/build.py`.
+## Uso della fase 2 — hardening (stesso script)
+
+```powershell
+.\Invoke-ADAssessment.ps1        # Configurazione: Modalita' = Hardening -> Controlli e azioni -> Analizza -> spunta -> Esegui
+.\Invoke-ADAssessment.ps1 -NoGui -ConfigPath .\hardening.json -User HD-MAQ,HD-PRE2K -Simulate
+```
+- **Analizza** verifica lo stato attuale di ogni azione: *Conforme* (non selezionabile), *Da applicare* (con il dettaglio), *Non verificabile*.
+- **Simulazione attiva di default**: il report dice esattamente cosa verrebbe fatto. Per applicare si toglie la spunta *Simulazione* e si conferma.
+- Per ogni azione applicata: **backup JSON dello stato precedente**, applicazione, **nuova verifica** (*OK* oppure *Attenzione* se l'effetto non è ancora visibile, es. replica), istruzioni di annullamento nel report.
+- Report in `<cartella report>\Hardening_<dominio>_<data>\` (HTML, CSV, JSON, `*.backup.json`).
+- Requisiti: RSAT ActiveDirectory e GroupPolicy, account Domain Admins (cestino AD ed Enterprise/Schema per poche azioni). Tutte le operazioni (LDAP, GPO, SYSVOL) usano lo stesso DC.
+
+| Area | Azioni (ID) | Impatto |
+|---|---|---|
+| Dominio | `HD-BIN` cestino AD · `HD-MAQ` MachineAccountQuota=0 · `HD-PRE2K` Anonymous/Everyone fuori da Pre-Windows 2000 · `HD-KDS` KDS root key · `HD-PWDPOL` policy password di dominio (lunghezza, complessità, blocco) | basso → alto |
+| Account privilegiati | `HD-SCHEMA` svuota Schema Admins · `HD-SENSITIVE` sensibili e non delegabili · `HD-PROTUSERS` Protected Users (elenco o tutti, esclusi SPN, Administrator e break-glass) · `HD-ADMINPSO` PSO dedicata agli admin · `HD-ADMINCOUNT` adminCount orfani + ereditarietà ACL · `HD-KRBTGT` rotazione krbtgt in **due passaggi** con controllo della replica su tutti i DC | basso → alto |
+| Account | `HD-ASREP` · `HD-DES` · `HD-REVERSIBLE` · `HD-PWDNOTREQD` · `HD-GUEST` · `HD-INACTIVE-USERS` · `HD-INACTIVE-COMPUTERS` (disattiva, annota, opzionalmente sposta in quarantena; esclusioni e break-glass) | basso / medio |
+| Windows LAPS | `HD-LAPS-SCHEMA` · `HD-LAPS-PERM` (SELF sulle OU) · `HD-LAPS-GPO` (lunghezza, rotazione, azioni post-autenticazione, account gestito) | basso |
+| GPO DC | `HD-DC-LDAPSIGN` · `HD-DC-LDAPCB` · `HD-DC-SMBSIGN` · `HD-DC-SMB1` · `HD-DC-NTLM` · `HD-DC-SPOOLER` (anche stop immediato) · `HD-DC-LSAPPL` · `HD-DC-WDIGEST` · `HD-DC-LOGS` (registro Security, riga di comando dei processi, script block logging) · `HD-DC-AUDIT` (30 sottocategorie dei criteri avanzati, baseline Microsoft) | basso → alto |
+| GPO server e client | `HD-MB-SMB1` · `HD-MB-WDIGEST` · `HD-MB-LSAPPL` · `HD-MB-NTLM` · `HD-MB-SMBSIGN` sulle OU indicate | medio / alto |
+| Tier model | `HD-TIER-OU` OU Tier0/1/2 (Accounts, Groups, Devices, ServiceAccounts) protette, gruppi TierN-Admins · `HD-TIER-LOGON` GPO di deny logon (locale, RDP, rete, batch, servizio) Tier0→Tier1/2 e Tier1→Tier2, **non collegate** finché non si sceglie | alto |
+
+Configurazione granulare in GUI: prefisso e modalità di collegamento delle GPO (attiva / disattivata / non collegata), OU per server e client, livello NTLM, channel binding, dimensione dei log, stop immediato dello Spooler, policy password e PSO, Protected Users, account break-glass, gestione degli inattivi, intervallo krbtgt, OU e parametri LAPS, nome del tier model e collegamento delle sue GPO.
+
+Le password GPP (cpassword) e la delega non vincolata restano solo segnalate dalla fotografia: si correggono a mano (serve sapere cosa usa quella configurazione).
+
+Sviluppo: sorgenti in `_src/` (controlli in `engine.ps1`, `Get-AdChecks`; azioni in `hardening.ps1`, `Get-HardeningActions`), file generato con `python _lib/build.py`.
 
 Tool per fotografare lo stato di sicurezza e salute di un dominio Active Directory, nello stile di PingCastle e Purple Knight, e applicare le best practice di hardening in modo guidato e reversibile. Alla fine produce anche la documentazione.
 
@@ -132,15 +158,16 @@ Report Word sullo schema dell'"Analisi Healthcheck Active Directory" già in uso
 - Esecuzione da un server membro o da un DC, con un account Domain Admin solo per la fase 2. La fase 1 deve funzionare il più possibile con un utente di dominio standard, segnalando i controlli che richiedono più privilegi.
 
 ## Decisioni
-- **Prese** (settembre 2026):
+- **Prese** (settembre 2026, aggiornate a novembre 2026):
+  - fase 2 (hardening) nello **stesso tool**, come modalità;
   - ambito limitato al dominio corrente;
   - ADCS e DHCP inclusi se presenti;
   - divisione in parte "healthy" e parte hardening;
   - export HTML / JSON / CSV.
 - **Da confermare**:
-  - la decisione di settembre era "solo analisi, nessuna remediation", ora superata dalla fase 2. Va deciso se la fase 2 resta nello stesso tool o diventa un tool separato (`ad-hardening-apply`);
   - lingua del report HTML (italiano; inglese in seguito?);
   - soglie di punteggio e pesi: allineati a PingCastle o propri.
 
 ## Changelog
+- **0.2.0** — fase 2: modalità Hardening con 38 azioni (dominio, account privilegiati, account, Windows LAPS, GPO DC e membri, criteri di audit avanzati, tier model), verifica prima/dopo, simulazione di default, backup JSON, report HTML/CSV/JSON con istruzioni di annullamento; configurazione granulare in GUI.
 - **0.1.0** — fase 1: 28 controlli in sola lettura, report HTML / JSON / CSV, punteggio, GUI e `-NoGui`.

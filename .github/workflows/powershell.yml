@@ -1,0 +1,42 @@
+name: powershell
+
+# Controllo sintattico di tutti gli script con il parser di Windows PowerShell 5.1
+# e verifica che i file generati da _lib/build.py siano aggiornati.
+on:
+  push:
+    paths:
+      - '**.ps1'
+      - '_lib/**'
+      - '.github/workflows/powershell.yml'
+  pull_request:
+    paths:
+      - '**.ps1'
+      - '_lib/**'
+  workflow_dispatch:
+
+jobs:
+  parse:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: File generati aggiornati
+        shell: pwsh
+        run: |
+          python _lib/build.py
+          $diff = git status --porcelain -- '*.ps1'
+          if ($diff) { Write-Host "::warning::File generati forse non aggiornati (o solo fine riga diversi): eseguire python _lib/build.py e fare commit`n$diff" }
+
+      - name: Sintassi (PowerShell 5.1)
+        shell: powershell
+        run: |
+          $bad = 0
+          foreach ($f in Get-ChildItem -Recurse -Filter *.ps1 | Where-Object { $_.FullName -notmatch '\\_src\\|\\_lib\\|\\_migrator-src\\' }) {
+            $tok = $null; $errs = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$tok, [ref]$errs)
+            foreach ($e in @($errs)) { Write-Host "::error file=$($f.FullName),line=$($e.Extent.StartLineNumber)::$($e.Message)"; $bad++ }
+            $bytes = [System.IO.File]::ReadAllBytes($f.FullName)
+            if ($bytes.Length -lt 3 -or $bytes[0] -ne 0xEF -or $bytes[1] -ne 0xBB -or $bytes[2] -ne 0xBF) { Write-Host "::warning file=$($f.FullName)::manca il BOM UTF-8" }
+          }
+          if ($bad) { exit 1 }
+          Write-Host 'Sintassi OK'
