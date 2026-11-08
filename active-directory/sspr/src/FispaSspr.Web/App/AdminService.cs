@@ -25,11 +25,12 @@ public sealed class AdminService
     private readonly TimeProvider _time;
     private readonly SlidingWindowRateLimiter _limiter;
     private readonly TextCatalog _texts;
+    private readonly SessionStore _sessions;
 
     public AdminService(SettingsStore settings, AdDirectory ad, PortalService portal, AuditLog audit, AdminTotpStore totp, KeyStore keys, SmtpChannel mail, SmsChannel sms, TimeProvider time,
-        SlidingWindowRateLimiter limiter, TextCatalog texts)
+        SlidingWindowRateLimiter limiter, TextCatalog texts, SessionStore sessions)
     {
-        _settings = settings; _ad = ad; _portal = portal; _audit = audit; _totp = totp; _keys = keys; _mail = mail; _sms = sms; _time = time; _limiter = limiter; _texts = texts;
+        _settings = settings; _ad = ad; _portal = portal; _audit = audit; _totp = totp; _keys = keys; _mail = mail; _sms = sms; _time = time; _limiter = limiter; _texts = texts; _sessions = sessions;
     }
 
     private SsprSettings S => _settings.Current;
@@ -136,7 +137,7 @@ public sealed class AdminService
             enrollment = _portal.EnrollmentStatus(e);
         }
         var events = withEvents
-            ? _audit.Query(_time.GetUtcNow().AddDays(-90), _time.GetUtcNow(), u.SamAccountName, null, 30).Select(r => new { time = r.Time, eventId = r.EventId, message = r.Message }).ToArray()
+            ? _audit.Query(_time.GetUtcNow().AddDays(-90), _time.GetUtcNow(), u.SamAccountName, null, 30, exactUser: true).Select(r => new { time = r.Time, eventId = r.EventId, message = r.Message }).ToArray()
             : Array.Empty<object>();
         return new
         {
@@ -235,6 +236,7 @@ public sealed class AdminService
         var pwd = GeneratePassword(Math.Max(16, rules.MinLength));
         var r = await _ad.ResetPasswordAsync(u, pwd, mustChangeAtNextLogon: true).ConfigureAwait(false);
         if (r != PasswordOperationResult.Ok) throw new PortalException(500, "Reset non riuscito: " + r);
+        _sessions.RevokeUser(u.Sid, null);
         await Audit(AuditEventId.AdminAction, AuditOutcome.Success, u.SamAccountName, s, ip, "Reset con password temporanea e cambio obbligatorio. Motivo: " + why).ConfigureAwait(false);
         await NotifyUser(u, "adminTemporaryReset").ConfigureAwait(false);
         return new { temporaryPassword = pwd };
@@ -346,7 +348,7 @@ public sealed class AdminService
         };
     }
 
-    public sealed record EnrollmentRow(string UserName, string? DisplayName, string? Mail, bool Enrolled, string Methods, DateTimeOffset? PasswordExpires);
+    public sealed record EnrollmentRow(string UserName, string? DisplayName, string? Mail, bool Enrolled, string Methods, DateTimeOffset? PasswordExpires, bool PasswordMustChange);
 
     /// <summary>Utenti dell'ambito con stato della registrazione e scadenza della password.</summary>
     public async Task<IReadOnlyList<EnrollmentRow>> EnrollmentReport(SessionData s, CancellationToken ct)
@@ -358,7 +360,7 @@ public sealed class AdminService
         return users.Select(u =>
         {
             var e = codec.Decode(u.Attributes, u.Sid, out _);
-            return new EnrollmentRow(u.SamAccountName, u.DisplayName, u.Mail, e.IsEnrolled(min), string.Join(", ", e.Methods.Select(PortalService.Name)), u.PasswordExpires);
+            return new EnrollmentRow(u.SamAccountName, u.DisplayName, u.Mail, e.IsEnrolled(min), string.Join(", ", e.Methods.Select(PortalService.Name)), u.PasswordExpires, u.MustChange);
         }).OrderBy(r => r.Enrolled).ThenBy(r => r.UserName, StringComparer.OrdinalIgnoreCase).ToList();
     }
 
@@ -410,6 +412,7 @@ public sealed class AdminService
         if (methods < v.MinimumEnrolledMethods) e.Add($"Metodi attivi ({methods}) inferiori al minimo richiesto ({v.MinimumEnrolledMethods}).");
         var r = n.RateLimits;
         if (r.PerUserPerHour is < 1 or > 100 || r.PerIpPerHour is < 1 or > 10000 || r.GlobalPerMinute is < 1 or > 10000 || r.CodesPerUserPerHour is < 1 or > 50) e.Add("Limiti dei tentativi fuori intervallo.");
+        if (r.VerifyFailuresPerDay is < 3 or > 100) e.Add("Verifiche fallite al giorno per utente: da 3 a 100.");
         if (n.Passwords.MinLength is < 8 or > 128) e.Add("Lunghezza minima della password: da 8 a 128.");
         if (n.Passwords.BannedWords.Count > 500 || n.Passwords.BannedWords.Any(w => w.Length > 100)) e.Add("Parole vietate: massimo 500, ciascuna fino a 100 caratteri.");
         foreach (var ou in n.Directory.AllowedOus)
@@ -440,6 +443,7 @@ public sealed class AdminService
         if (n.Audit.SyslogEnabled && (string.IsNullOrWhiteSpace(n.Audit.SyslogHost) || !System.Text.RegularExpressions.Regex.IsMatch(n.Audit.SyslogHost, @"^[A-Za-z0-9.:\-]{1,255}$"))) e.Add("Server syslog non valido.");
         if (n.Audit.SyslogPort is < 1 or > 65535 || n.Audit.SyslogProtocol is not ("Udp" or "Tcp")) e.Add("Porta o protocollo syslog non validi (Udp o Tcp).");
         if (!IsUrl(n.Audit.WebhookUrl, httpsOnly: false)) e.Add("URL del webhook non valido.");
+        if (n.Audit.WebhookFormat is not ("text" or "teams")) e.Add("Formato del webhook: text o teams.");
         if (n.Expiry is null || n.Campaign is null) { e.Add("Sezioni Scadenze o Campagna mancanti."); return e; }
         if (n.Expiry.DaysBefore is null || n.Expiry.DaysBefore.Count is < 1 or > 10 || n.Expiry.DaysBefore.Any(d => d is < 1 or > 90)) e.Add("Giorni di preavviso: da 1 a 10 valori tra 1 e 90.");
         if (n.Expiry.HourOfDay is < 0 or > 23 || n.Campaign.HourOfDay is < 0 or > 23) e.Add("Ora delle attivita' pianificate: da 0 a 23.");

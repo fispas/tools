@@ -67,6 +67,13 @@ g("Cambio password", [
  ("change.done.title", "Password cambiata"),
  ("change.done.text", "Usa la nuova password da subito. Sugli altri dispositivi (telefono, posta) aggiornala quando richiesto."),
  ("pwd.minLength", "Almeno {min} caratteri", "{min}"), ("pwd.valid", "Password valida"),
+ ("pwd.err.empty", "Inserire una password."),
+ ("pwd.err.minLength", "La password deve avere almeno {min} caratteri.", "{min}"),
+ ("pwd.err.maxLength", "La password non può superare {max} caratteri.", "{max}"),
+ ("pwd.err.control", "La password contiene caratteri non ammessi."),
+ ("pwd.err.complexity", "La password deve contenere almeno tre tipi di caratteri tra maiuscole, minuscole, numeri e simboli."),
+ ("pwd.err.name", "La password non può contenere il nome utente o parti del nome."),
+ ("pwd.err.banned", "La password contiene una parola non ammessa (ad esempio il nome dell'azienda)."),
 ])
 g("Reset e sblocco", [
  ("start.reset.title", "Reimposta la password"), ("start.unlock.title", "Sblocca l'account"),
@@ -88,6 +95,7 @@ g("Reset e sblocco", [
 g("Messaggi di errore", [
  ("err.sessionExpired", "Sessione scaduta: ricaricare la pagina."),
  ("err.rateLimit", "Troppi tentativi. Riprovare più tardi."),
+ ("err.verifyBlocked", "Troppe verifiche non riuscite per questo account nelle ultime 24 ore: per sicurezza riprova domani o contatta l'help desk ({helpdesk})."),
  ("err.rateLimitWait", "(attendere circa {minutes} minuti)", "{minutes}"),
  ("err.loginFailed", "Nome utente o password non validi."),
  ("err.loginRequired", "Accesso richiesto."),
@@ -119,7 +127,7 @@ g("Messaggi di errore", [
  ("err.operationInvalid", "Operazione non valida."), ("err.userRequired", "Inserire il nome utente."),
  ("err.chooseMethod", "Scegliere prima un metodo."), ("err.tooManyCodes", "Troppi codici errati: ricominciare."),
  ("err.notVerified", "Verifica dell'identità non completata."), ("err.notAllowed", "Operazione non consentita."),
- ("err.adRejectedReset", "Active Directory ha rifiutato la password (cronologia o requisiti): sceglierne un'altra."),
+ ("err.adRejectedReset", "Active Directory ha rifiutato la password: potrebbe essere già stata usata (cronologia), la password potrebbe essere stata cambiata da troppo poco tempo oppure non rispetta i requisiti. Sceglierne un'altra o contattare l'help desk."),
  ("err.resetFailed", "Reset non riuscito. Contattare l'help desk."),
  ("err.unlockFailed", "Sblocco non riuscito. Contattare l'help desk."),
  ("err.unexpected", "Errore imprevisto. Riprovare o contattare l'help desk."),
@@ -222,7 +230,7 @@ EN = {
  "err.accountLocked": "The account is locked: use the unlock feature.", "err.changeFailed": "Password change failed. Try again or contact the help desk.",
  "err.flowExpired": "Session expired: start again.", "err.operationInvalid": "Invalid operation.", "err.userRequired": "Enter your user name.",
  "err.chooseMethod": "Choose a method first.", "err.tooManyCodes": "Too many wrong codes: start again.", "err.notVerified": "Identity verification not completed.",
- "err.notAllowed": "Operation not allowed.", "err.adRejectedReset": "Active Directory rejected the password (history or requirements): choose another one.",
+ "err.notAllowed": "Operation not allowed.", "err.adRejectedReset": "Active Directory rejected the password: it may have been used before (history), the password may have been changed too recently, or it does not meet the requirements. Choose another one or contact the help desk.",
  "err.resetFailed": "Reset failed. Contact the help desk.", "err.unlockFailed": "Unlock failed. Contact the help desk.",
  "err.unexpected": "Unexpected error. Try again or contact the help desk.", "err.busy": "Service temporarily busy: try again shortly.",
  "notify.purpose.enroll": "registration", "notify.purpose.change": "the password change", "notify.purpose.reset": "the password reset",
@@ -260,6 +268,16 @@ EN = {
  "notify.invite.subject": "Register with the password portal - {company}",
  "notify.invite.body": "Hello {displayName},\nregister your verification methods at {portalUrl}: you will need them to reset your password or unlock your account on your own, without calling the help desk.\nIt only takes a few minutes from a company PC." + sigE,
 }
+EN.update({
+ "pwd.err.empty": "Enter a password.",
+ "pwd.err.minLength": "The password must be at least {min} characters long.",
+ "pwd.err.maxLength": "The password cannot be longer than {max} characters.",
+ "pwd.err.control": "The password contains characters that are not allowed.",
+ "pwd.err.complexity": "The password must contain at least three of: uppercase letters, lowercase letters, numbers and symbols.",
+ "pwd.err.name": "The password cannot contain the user name or parts of the name.",
+ "pwd.err.banned": "The password contains a word that is not allowed (for example the company name).",
+ "err.verifyBlocked": "Too many failed verifications for this account in the last 24 hours: for your security try again tomorrow or contact the help desk ({helpdesk}).",
+})
 missing = [k for k in G if k not in EN]
 extra = [k for k in EN if k not in G]
 assert not missing and not extra, (missing, extra)

@@ -46,6 +46,8 @@ public class AccountProtectionTests
     [InlineData("-512")]
     [InlineData("-519")]
     [InlineData("-525")]
+    [InlineData("-498")]
+    [InlineData("-517")]
     public void Members_of_privileged_domain_groups_are_protected(string rid)
         => Assert.False(AccountProtection.Evaluate(User(g => g.Add(Domain + rid)), Scope).Manageable);
 
@@ -53,6 +55,8 @@ public class AccountProtectionTests
     [InlineData("S-1-5-32-544")]
     [InlineData("S-1-5-32-548")]
     [InlineData("S-1-5-32-551")]
+    [InlineData("S-1-5-32-578")]
+    [InlineData("S-1-5-32-582")]
     public void Members_of_privileged_builtin_groups_are_protected(string sid)
         => Assert.False(AccountProtection.Evaluate(User(g => g.Add(sid)), Scope).Manageable);
 
@@ -67,6 +71,10 @@ public class AccountProtectionTests
         => Assert.False(AccountProtection.Evaluate(User(classes: new[] { "top", "user", "computer", "msDS-GroupManagedServiceAccount" }), Scope).Manageable);
 
     [Fact]
+    public void Rid_suffix_match_is_exact()
+        => Assert.True(AccountProtection.Evaluate(User(g => g.Add(Domain + "-1512")), Scope).Manageable);
+
+    [Fact]
     public void Excluded_groups_are_respected()
     {
         var scope = Scope with { ExcludedGroupSids = new[] { Domain + "-3001" } };
@@ -77,6 +85,19 @@ public class AccountProtectionTests
 public class PasswordPolicyTests
 {
     private static readonly PasswordContext Ctx = new("mario.rossi", "Mario Rossi");
+
+    [Fact]
+    public void Issues_have_stable_codes_and_values()
+    {
+        var issues = PasswordPolicy.Check("abc", new PasswordRules { MinLength = 14 }, Ctx);
+        Assert.Contains(issues, i => i.Code == PasswordPolicy.MinLength && i.Value == 14);
+        Assert.Contains(issues, i => i.Code == PasswordPolicy.Complexity);
+        Assert.Equal(issues.Count, PasswordPolicy.Validate("abc", new PasswordRules { MinLength = 14 }, Ctx).Count);
+    }
+
+    [Fact]
+    public void Empty_password_has_a_single_issue()
+        => Assert.Equal(PasswordPolicy.Empty, Assert.Single(PasswordPolicy.Check("", new PasswordRules(), Ctx)).Code);
 
     [Fact]
     public void Strong_password_passes()
@@ -158,6 +179,13 @@ public class SecurityHelpersTests
     [InlineData("Mario.Rossi@Example.COM", "Mario.Rossi@example.com")]
     [InlineData("no-at-sign", null)]
     [InlineData("a b@c.it", null)]
+    [InlineData("a,b@c.it", null)]
+    [InlineData("\"a\"@c.it", null)]
+    [InlineData("<a@c.it>", null)]
+    [InlineData("a@c.it;b@d.it", null)]
+    [InlineData("a..b@c.it", null)]
+    [InlineData("a@-c.it", null)]
+    [InlineData("mario+sspr@posta.example.it", "mario+sspr@posta.example.it")]
     public void Email_normalization(string input, string? expected) => Assert.Equal(expected, Normalization.Email(input));
 
     [Theory]

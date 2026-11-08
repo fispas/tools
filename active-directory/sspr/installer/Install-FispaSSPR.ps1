@@ -56,7 +56,7 @@ Add-Type -AssemblyName System.Windows.Forms, System.Drawing, System.DirectorySer
 [System.Windows.Forms.Application]::EnableVisualStyles()
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
-$Version = '0.3.0'
+$Version = '0.5.0'
 $DataDir = Join-Path $env:ProgramData 'FispaSSPR'
 $InstallDir = Join-Path $env:ProgramFiles 'FispaSSPR'
 $StateFile = Join-Path $DataDir 'installer-state.json'
@@ -79,7 +79,7 @@ $W = [ordered]@{
     UserOus = @(); ExcludedGroups = @(); AdminGroup = 'SSPR-Admins'; HelpdeskGroup = 'SSPR-Helpdesk'; GroupOu = ''; AddMeToAdmins = $true
     AdminGroupSid = ''; HelpdeskGroupSid = ''; ExcludedGroupSids = @(); Delegated = $false
     CertMode = 'Esistente'; CertThumbprint = ''; CertTemplate = 'WebServer'; Port = 443
-    Company = ''; Helpdesk = ''; Totp = $true; Sms = $true; Email = $true; MinMethods = 2; ResetVerifications = 2
+    Company = ''; Helpdesk = ''; Totp = $true; Sms = $true; Email = $true; MinMethods = 2; ResetVerifications = 2; FirstEnrollWindows = $true
     SmtpHost = ''; SmtpPort = 25; SmtpTls = $true; SmtpFrom = ''; SmtpUser = ''
     SmsProvider = 'AndroidGatewayLocal'; SmsEndpoint = 'http://192.168.1.50:8080/message'; SmsUser = ''
     Breached = 'OnlineKAnonymity'; BannedWords = @(); BackupFile = (Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'FispaSSPR-chiave-backup.json')
@@ -496,6 +496,7 @@ Add-Page 'Portale, email e SMS' {
     $script:cEmail = Add-Check 'Email personale' ([bool]$W.Email)
     $script:fMin = Add-Field 'Metodi minimi da registrare' $W.MinMethods -Width 60
     $script:fResetV = Add-Field 'Verifiche richieste per il reset' $W.ResetVerifications -Width 60
+    $script:cFirstWin = Add-Check 'Prima registrazione dei metodi solo dal PC aziendale (accesso Windows) - consigliato' ([bool]$W.FirstEnrollWindows)
     $script:Y += 6; Add-Text 'Email (SMTP)' 'Black' | Out-Null
     $script:fSmtpHost = Add-Field 'Server SMTP' $W.SmtpHost
     $script:fSmtpPort = Add-Field 'Porta' $W.SmtpPort -Width 80
@@ -528,7 +529,7 @@ Add-Page 'Portale, email e SMS' {
 } {
     $W.Company = $script:fCompany.Text.Trim(); $W.Helpdesk = $script:fHelp.Text.Trim()
     $W.Totp = $script:cTotp.Checked; $W.Sms = $script:cSms.Checked; $W.Email = $script:cEmail.Checked
-    $W.MinMethods = [int]$script:fMin.Text; $W.ResetVerifications = [int]$script:fResetV.Text
+    $W.MinMethods = [int]$script:fMin.Text; $W.ResetVerifications = [int]$script:fResetV.Text; $W.FirstEnrollWindows = $script:cFirstWin.Checked
     $W.SmtpHost = $script:fSmtpHost.Text.Trim(); $W.SmtpPort = [int]$script:fSmtpPort.Text; $W.SmtpTls = $script:cSmtpTls.Checked
     $W.SmtpFrom = $script:fSmtpFrom.Text.Trim(); $W.SmtpUser = $script:fSmtpUser.Text.Trim(); $Secrets.SmtpPassword = $script:fSmtpPwd.Text
     $W.SmsProvider = [string]$script:cSmsProv.SelectedItem; $W.SmsEndpoint = $script:fSmsUrl.Text.Trim(); $W.SmsUser = $script:fSmsUser.Text.Trim(); $Secrets.SmsPassword = $script:fSmsPwd.Text
@@ -576,8 +577,14 @@ function Install-Portal {
     if ([int]@($rc)[-1] -ge 8) { throw "Copia dei file non riuscita (robocopy $(@($rc)[-1]))." }
     # 2. cartella dati: SYSTEM, Administrators, gMSA
     foreach ($d in @($DataDir, (Join-Path $DataDir 'keys'), (Join-Path $DataDir 'audit'))) { New-Item -ItemType Directory -Path $d -Force | Out-Null }
+    # proprietario Administrators: una cartella creata prima da un utente non amministratore non gli lascia il controllo dei permessi
+    & icacls.exe $DataDir /setowner '*S-1-5-32-544' /T /C /Q | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Proprietario della cartella dati non impostato.' }
     & icacls.exe $DataDir /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' "*$($W.GmsaSid):(OI)(CI)M" /T /C /Q | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'Permessi sulla cartella dati non assegnati.' }
+    # chiavi master: il servizio le legge soltanto
+    & icacls.exe (Join-Path $DataDir 'keys') /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' "*$($W.GmsaSid):(OI)(CI)RX" /T /C /Q | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Permessi sulla cartella delle chiavi non assegnati.' }
     # 3. configurazione
     $cfgFile = Join-Path $DataDir 'config.json'
     $cfg = if (Test-Path $cfgFile) { Get-Content $cfgFile -Raw | ConvertFrom-Json } else { $null }
@@ -599,6 +606,7 @@ function Install-Portal {
         smtp = [ordered]@{ host = $W.SmtpHost; port = [int]$W.SmtpPort; useStartTls = [bool]$W.SmtpTls; from = $W.SmtpFrom; userName = $(if ($W.SmtpUser) { $W.SmtpUser } else { $null }); passwordEnvelope = $(if ($cfg) { $cfg.smtp.passwordEnvelope } else { $null }) }
         sms = [ordered]@{ provider = $(if ($W.Sms) { $W.SmsProvider } else { 'None' }); endpoint = $W.SmsEndpoint; userName = $(if ($W.SmsUser) { $W.SmsUser } else { $null }); passwordEnvelope = $(if ($cfg) { $cfg.sms.passwordEnvelope } else { $null }); genericBodyTemplate = $null; senderName = '' }
         admin = [ordered]@{ adminGroupSid = $W.AdminGroupSid; helpdeskGroupSid = $W.HelpdeskGroupSid; requireTotpForAdmins = $true; sessionMinutes = 30 }
+        features = [ordered]@{ firstEnrollmentRequiresWindowsLogin = [bool]$W.FirstEnrollWindows }
     } }
     [IO.File]::WriteAllText($cfgFile, ([pscustomobject]$new | ConvertTo-Json -Depth 6), (New-Object System.Text.UTF8Encoding($false)))
     Log 'Configurazione scritta.' 'OK'

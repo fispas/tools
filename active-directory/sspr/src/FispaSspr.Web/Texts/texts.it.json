@@ -374,6 +374,41 @@
   "t": "Password valida",
   "d": ""
  },
+ "pwd.err.empty": {
+  "g": "Cambio password",
+  "t": "Inserire una password.",
+  "d": ""
+ },
+ "pwd.err.minLength": {
+  "g": "Cambio password",
+  "t": "La password deve avere almeno {min} caratteri.",
+  "d": "{min}"
+ },
+ "pwd.err.maxLength": {
+  "g": "Cambio password",
+  "t": "La password non pu\u00f2 superare {max} caratteri.",
+  "d": "{max}"
+ },
+ "pwd.err.control": {
+  "g": "Cambio password",
+  "t": "La password contiene caratteri non ammessi.",
+  "d": ""
+ },
+ "pwd.err.complexity": {
+  "g": "Cambio password",
+  "t": "La password deve contenere almeno tre tipi di caratteri tra maiuscole, minuscole, numeri e simboli.",
+  "d": ""
+ },
+ "pwd.err.name": {
+  "g": "Cambio password",
+  "t": "La password non pu\u00f2 contenere il nome utente o parti del nome.",
+  "d": ""
+ },
+ "pwd.err.banned": {
+  "g": "Cambio password",
+  "t": "La password contiene una parola non ammessa (ad esempio il nome dell'azienda).",
+  "d": ""
+ },
  "start.reset.title": {
   "g": "Reset e sblocco",
   "t": "Reimposta la password",
@@ -497,6 +532,11 @@
  "err.rateLimit": {
   "g": "Messaggi di errore",
   "t": "Troppi tentativi. Riprovare pi\u00f9 tardi.",
+  "d": ""
+ },
+ "err.verifyBlocked": {
+  "g": "Messaggi di errore",
+  "t": "Troppe verifiche non riuscite per questo account nelle ultime 24 ore: per sicurezza riprova domani o contatta l'help desk ({helpdesk}).",
   "d": ""
  },
  "err.rateLimitWait": {
@@ -681,7 +721,7 @@
  },
  "err.adRejectedReset": {
   "g": "Messaggi di errore",
-  "t": "Active Directory ha rifiutato la password (cronologia o requisiti): sceglierne un'altra.",
+  "t": "Active Directory ha rifiutato la password: potrebbe essere gi\u00e0 stata usata (cronologia), la password potrebbe essere stata cambiata da troppo poco tempo oppure non rispetta i requisiti. Sceglierne un'altra o contattare l'help desk.",
   "d": ""
  },
  "err.resetFailed": {

@@ -32,16 +32,25 @@ public sealed class OtpChallengeStore
 
     private readonly TimeProvider _time;
     private readonly byte[] _hmacKey;
-    private readonly int _maxAttempts;
+    private readonly Func<int> _maxAttempts;
     private readonly Dictionary<string, Entry> _entries = new(StringComparer.Ordinal);
     private readonly object _lock = new();
 
     public OtpChallengeStore(TimeProvider time, int maxAttempts = 5, byte[]? hmacKey = null)
+        : this(time, Fixed(maxAttempts), hmacKey) { }
+
+    /// <summary>Tentativi massimi letti a ogni verifica: la configurazione si puo' cambiare senza riavviare il servizio.</summary>
+    public OtpChallengeStore(TimeProvider time, Func<int> maxAttempts, byte[]? hmacKey = null)
     {
         _time = time ?? throw new ArgumentNullException(nameof(time));
-        ArgumentOutOfRangeException.ThrowIfLessThan(maxAttempts, 1);
-        _maxAttempts = maxAttempts;
+        _maxAttempts = maxAttempts ?? throw new ArgumentNullException(nameof(maxAttempts));
         _hmacKey = hmacKey ?? RandomNumberGenerator.GetBytes(32);
+    }
+
+    private static Func<int> Fixed(int maxAttempts)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxAttempts, 1);
+        return () => maxAttempts;
     }
 
     public int Count { get { lock (_lock) { return _entries.Count; } } }
@@ -81,7 +90,7 @@ public sealed class OtpChallengeStore
                 return OtpVerifyResult.Ok;
             }
             e.Attempts++;
-            if (e.Attempts >= _maxAttempts)
+            if (e.Attempts >= Math.Clamp(_maxAttempts(), 1, 100))
             {
                 _entries.Remove(id);
                 return OtpVerifyResult.TooManyAttempts;

@@ -374,6 +374,41 @@
   "t": "Valid password",
   "d": ""
  },
+ "pwd.err.empty": {
+  "g": "Cambio password",
+  "t": "Enter a password.",
+  "d": ""
+ },
+ "pwd.err.minLength": {
+  "g": "Cambio password",
+  "t": "The password must be at least {min} characters long.",
+  "d": "{min}"
+ },
+ "pwd.err.maxLength": {
+  "g": "Cambio password",
+  "t": "The password cannot be longer than {max} characters.",
+  "d": "{max}"
+ },
+ "pwd.err.control": {
+  "g": "Cambio password",
+  "t": "The password contains characters that are not allowed.",
+  "d": ""
+ },
+ "pwd.err.complexity": {
+  "g": "Cambio password",
+  "t": "The password must contain at least three of: uppercase letters, lowercase letters, numbers and symbols.",
+  "d": ""
+ },
+ "pwd.err.name": {
+  "g": "Cambio password",
+  "t": "The password cannot contain the user name or parts of the name.",
+  "d": ""
+ },
+ "pwd.err.banned": {
+  "g": "Cambio password",
+  "t": "The password contains a word that is not allowed (for example the company name).",
+  "d": ""
+ },
  "start.reset.title": {
   "g": "Reset e sblocco",
   "t": "Reset your password",
@@ -497,6 +532,11 @@
  "err.rateLimit": {
   "g": "Messaggi di errore",
   "t": "Too many attempts. Please try again later.",
+  "d": ""
+ },
+ "err.verifyBlocked": {
+  "g": "Messaggi di errore",
+  "t": "Too many failed verifications for this account in the last 24 hours: for your security try again tomorrow or contact the help desk ({helpdesk}).",
   "d": ""
  },
  "err.rateLimitWait": {
@@ -681,7 +721,7 @@
  },
  "err.adRejectedReset": {
   "g": "Messaggi di errore",
-  "t": "Active Directory rejected the password (history or requirements): choose another one.",
+  "t": "Active Directory rejected the password: it may have been used before (history), the password may have been changed too recently, or it does not meet the requirements. Choose another one or contact the help desk.",
   "d": ""
  },
  "err.resetFailed": {

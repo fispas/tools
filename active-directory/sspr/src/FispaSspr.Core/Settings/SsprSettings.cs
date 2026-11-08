@@ -150,10 +150,12 @@ public sealed record AuditSettings
     public int SyslogPort { get; init; } = 514;
     /// <summary>Udp oppure Tcp (framing a conteggio di ottetti, RFC 6587).</summary>
     public string SyslogProtocol { get; init; } = "Udp";
-    /// <summary>Webhook (Teams, Slack o altro) che riceve {"text": "..."}.</summary>
+    /// <summary>Webhook (Teams, Slack o altro): formato in <see cref="WebhookFormat"/>.</summary>
     public string WebhookUrl { get; init; } = "";
     /// <summary>Solo esiti negativi (fallimenti, blocchi) e azioni degli operatori.</summary>
     public bool WebhookOnlyIssues { get; init; } = true;
+    /// <summary>text = {"text": "..."} (Slack, Google Chat, Mattermost, Rocket.Chat); teams = Adaptive Card per i flussi di lavoro di Teams.</summary>
+    public string WebhookFormat { get; init; } = "text";
 }
 
 public sealed record GeneralSettings
@@ -184,6 +186,11 @@ public sealed record DirectorySettings
     public string DomainController { get; init; } = "";
     public IReadOnlyList<string> AllowedOus { get; init; } = Array.Empty<string>();
     public IReadOnlyList<string> ExcludedGroupSids { get; init; } = Array.Empty<string>();
+    /// <summary>
+    /// Membri dei gruppi operatori (admin e help desk del portale) esclusi dal self-service e dalle azioni del pannello:
+    /// di solito hanno deleghe in AD, il loro reset via SMS/email sarebbe una scorciatoia verso quei permessi.
+    /// </summary>
+    public bool ExcludeOperatorGroups { get; init; } = true;
 }
 
 public sealed record VerificationSettings
@@ -211,6 +218,8 @@ public sealed record RateLimitSettings
     public int PerIpPerHour { get; init; } = 30;
     public int GlobalPerMinute { get; init; } = 120;
     public int CodesPerUserPerHour { get; init; } = 6;
+    /// <summary>Verifiche fallite (codici o app) per utente in 24 ore: oltre, reset e conferma d'identita' restano bloccati fino al giorno dopo.</summary>
+    public int VerifyFailuresPerDay { get; init; } = 10;
 }
 
 public enum BreachedCheckMode
@@ -229,6 +238,11 @@ public sealed record PasswordSettings
     public string? OfflineListPath { get; init; }
     /// <summary>Se il servizio delle password compromesse non risponde: true = si rifiuta la password.</summary>
     public bool BlockWhenBreachCheckUnavailable { get; init; }
+    /// <summary>
+    /// Reset con cronologia ed eta' minima della password di dominio/PSO (controllo LDAP_SERVER_POLICY_HINTS, come il writeback di Entra):
+    /// impedisce di "reimpostare" una password gia' usata. Se il DC non lo supporta si usa il reset standard.
+    /// </summary>
+    public bool EnforceHistoryOnReset { get; init; } = true;
 }
 
 public sealed record SmtpSettings

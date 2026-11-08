@@ -131,6 +131,41 @@ public sealed class AdDirectory : IDirectory, IEnrollmentStore
         catch (COMException) { return null; }
     }, ct);
 
+    // ------------------------------------------------------------------ gruppi privilegiati senza RID fisso
+
+    /// <summary>Gruppi con privilegi elevati ma SID diverso in ogni dominio: DnsAdmins (codice sui DC) e i gruppi di Exchange con diritti su AD.</summary>
+    private static readonly string[] ExtraPrivilegedNames =
+    {
+        "DnsAdmins", "Organization Management", "Exchange Trusted Subsystem", "Exchange Windows Permissions",
+    };
+
+    private readonly object _privLock = new();
+    private IReadOnlyList<string> _extraPriv = Array.Empty<string>();
+    private DateTimeOffset _extraPrivAt = DateTimeOffset.MinValue;
+
+    /// <summary>SID dei gruppi privilegiati trovati nel dominio, riletti ogni ora (in caso di errore resta l'ultimo elenco noto).</summary>
+    public IReadOnlyList<string> ExtraPrivilegedGroupSids()
+    {
+        lock (_privLock)
+        {
+            if (DateTimeOffset.UtcNow - _extraPrivAt < TimeSpan.FromHours(1)) return _extraPriv;
+            _extraPrivAt = DateTimeOffset.UtcNow;
+            try
+            {
+                var filter = "(&(objectCategory=group)(|" + string.Concat(ExtraPrivilegedNames.Select(n => $"(sAMAccountName={EscapeFilter(n)})")) + "))";
+                using var root = Entry(NamingContext);
+                using var ds = new DirectorySearcher(root, filter, new[] { "objectSid" }) { PageSize = 100 };
+                using var results = ds.FindAll();
+                var list = new List<string>();
+                foreach (SearchResult r in results)
+                    if (r.Properties["objectSid"].Count > 0 && r.Properties["objectSid"][0] is byte[] b) list.Add(new SecurityIdentifier(b, 0).Value);
+                _extraPriv = list;
+            }
+            catch (Exception ex) when (ex is COMException or InvalidOperationException) { _log.LogWarning(ex, "Gruppi privilegiati aggiuntivi non leggibili: uso l'ultimo elenco noto"); }
+            return _extraPriv;
+        }
+    }
+
     public Task<IReadOnlyList<DirectoryUser>> SearchUsersAsync(string text, int max, CancellationToken ct = default) => Task.Run<IReadOnlyList<DirectoryUser>>(() =>
     {
         var list = new List<DirectoryUser>();
@@ -151,7 +186,8 @@ public sealed class AdDirectory : IDirectory, IEnrollmentStore
         return list;
     }, ct);
 
-public sealed record ScopeUser(string Sid, string SamAccountName, string? DisplayName, string? Mail, DateTimeOffset? PasswordExpires, IReadOnlyDictionary<string, string?> Attributes);
+    /// <summary>Utente dell'ambito. <paramref name="MustChange"/>: password scaduta o da cambiare al prossimo accesso.</summary>
+    public sealed record ScopeUser(string Sid, string SamAccountName, string? DisplayName, string? Mail, DateTimeOffset? PasswordExpires, IReadOnlyDictionary<string, string?> Attributes, bool MustChange = false);
 
     /// <summary>
     /// Utenti attivi nelle OU abilitate, con scadenza della password (msDS-UserPasswordExpiryTimeComputed) e attributi SSPR,
@@ -175,11 +211,17 @@ public sealed record ScopeUser(string Sid, string SamAccountName, string? Displa
                 var sid = new SecurityIdentifier((byte[])r.Properties["objectSid"][0], 0).Value;
                 if (!seen.Add(sid)) continue;
                 DateTimeOffset? exp = null;
-                if (r.Properties["msDS-UserPasswordExpiryTimeComputed"].Count > 0 && r.Properties["msDS-UserPasswordExpiryTimeComputed"][0] is long ft && ft > 0 && ft < DateTime.MaxValue.ToFileTimeUtc())
-                    exp = DateTimeOffset.FromFileTime(ft);
+                var mustChange = false;
+                if (r.Properties["msDS-UserPasswordExpiryTimeComputed"].Count > 0 && r.Properties["msDS-UserPasswordExpiryTimeComputed"][0] is long ft)
+                {
+                    // 0 = cambio obbligatorio al prossimo accesso; valore massimo = non scade mai
+                    if (ft == 0) mustChange = true;
+                    else if (ft > 0 && ft < DateTime.MaxValue.ToFileTimeUtc()) exp = DateTimeOffset.FromFileTime(ft);
+                }
+                if (exp is { } e0 && e0 <= DateTimeOffset.Now) mustChange = true;
                 var attrs = SsprAttributes.All.ToDictionary(a => a, a => r.Properties[a].Count > 0 ? r.Properties[a][0] as string : null);
                 list.Add(new ScopeUser(sid, (string)r.Properties["sAMAccountName"][0], r.Properties["displayName"].Count > 0 ? r.Properties["displayName"][0] as string : null,
-                    r.Properties["mail"].Count > 0 ? r.Properties["mail"][0] as string : null, exp, attrs));
+                    r.Properties["mail"].Count > 0 ? r.Properties["mail"][0] as string : null, exp, attrs, mustChange));
             }
         }
         return list;
@@ -240,8 +282,15 @@ public sealed record ScopeUser(string Sid, string SamAccountName, string? Displa
     {
         try
         {
+            var done = false;
+            if (_settings.Current.Passwords.EnforceHistoryOnReset)
+            {
+                // DC non raggiungibile via LDAP diretto: si ripiega sul reset standard (ADSI con DC locator)
+                try { done = SetPasswordWithPolicy(user.DistinguishedName, newPassword); }
+                catch (Ldap.LdapException ex) { _log.LogWarning(ex, "Reset con controllo della cronologia non eseguibile: uso il reset standard"); }
+            }
             using var de = Entry(user.DistinguishedName);
-            de.Invoke("SetPassword", newPassword);
+            if (!done) de.Invoke("SetPassword", newPassword);
             if (mustChangeAtNextLogon) de.Properties["pwdLastSet"].Value = 0;
             if (user.LockedOut) de.Properties["lockoutTime"].Value = 0;
             if (mustChangeAtNextLogon || user.LockedOut) de.CommitChanges();
@@ -249,6 +298,41 @@ public sealed record ScopeUser(string Sid, string SamAccountName, string? Displa
         }
         catch (Exception ex) { return MapError(ex, "reset"); }
     }, ct);
+
+    /// <summary>Gli OID del controllo LDAP_SERVER_POLICY_HINTS: attuale (2012 R2+) e precedente (2008 R2 SP1).</summary>
+    private static readonly string[] PolicyHintsOids = { "1.2.840.113556.1.4.2239", "1.2.840.113556.1.4.2066" };
+
+    /// <summary>
+    /// Reset (sostituzione di unicodePwd con il diritto "Reimposta password" del gMSA) con il controllo LDAP_SERVER_POLICY_HINTS:
+    /// AD applica cronologia ed eta' minima come in un cambio password. Connessione Kerberos firmata e cifrata.
+    /// Restituisce false se il DC non supporta il controllo (si usa allora il reset standard). Le violazioni dei criteri sono eccezioni.
+    /// </summary>
+    private bool SetPasswordWithPolicy(string dn, string newPassword)
+    {
+        var host = Server.Length > 0 ? Server : DnsDomain;
+        using var conn = new Ldap.LdapConnection(new Ldap.LdapDirectoryIdentifier(host), null, Ldap.AuthType.Negotiate);
+        conn.SessionOptions.ProtocolVersion = 3;
+        conn.SessionOptions.Signing = true;
+        conn.SessionOptions.Sealing = true;
+        conn.Timeout = TimeSpan.FromSeconds(15);
+        conn.Bind();
+        foreach (var oid in PolicyHintsOids)
+        {
+            var mod = new Ldap.DirectoryAttributeModification { Name = "unicodePwd", Operation = Ldap.DirectoryAttributeOperation.Replace };
+            mod.Add(System.Text.Encoding.Unicode.GetBytes("\"" + newPassword + "\""));
+            var req = new Ldap.ModifyRequest(dn, mod);
+            // valore BER: SEQUENCE { INTEGER 1 } = applica i criteri
+            req.Controls.Add(new Ldap.DirectoryControl(oid, new byte[] { 0x30, 0x03, 0x02, 0x01, 0x01 }, true, true));
+            try
+            {
+                conn.SendRequest(req);
+                return true;
+            }
+            catch (Ldap.DirectoryOperationException ex) when (ex.Response?.ResultCode == Ldap.ResultCode.UnavailableCriticalExtension) { }
+        }
+        _log.LogWarning("Il domain controller {Host} non supporta LDAP_SERVER_POLICY_HINTS: reset senza controllo della cronologia", host);
+        return false;
+    }
 
     public Task<PasswordOperationResult> ChangePasswordAsync(DirectoryUser user, string currentPassword, string newPassword, CancellationToken ct = default) => Task.Run(() =>
     {
@@ -340,6 +424,21 @@ public sealed record ScopeUser(string Sid, string SamAccountName, string? Displa
     private PasswordOperationResult MapError(Exception ex, string op)
     {
         var e = ex is TargetInvocationException { InnerException: { } inner } ? inner : ex;
+        if (e is Ldap.DirectoryOperationException doe)
+        {
+            var code = doe.Response?.ResultCode;
+            var msg = doe.Response?.ErrorMessage ?? doe.Message;
+            _log.LogWarning("Operazione {Op} non riuscita (LDAP {Code}): {Message}", op, code, msg);
+            // 0000052D = criteri della password (lunghezza, complessita', cronologia, eta' minima)
+            if (msg.Contains("0000052D", StringComparison.OrdinalIgnoreCase) || code == Ldap.ResultCode.ConstraintViolation) return PasswordOperationResult.PolicyViolation;
+            if (code == Ldap.ResultCode.InsufficientAccessRights) return PasswordOperationResult.AccessDenied;
+            return PasswordOperationResult.Error;
+        }
+        if (e is Ldap.LdapException le)
+        {
+            _log.LogWarning("Operazione {Op} non riuscita: connessione LDAP {Code} {Message}", op, le.ErrorCode, le.Message);
+            return PasswordOperationResult.Error;
+        }
         var hr = e.HResult;
         var text = (e as DirectoryServicesCOMException)?.ExtendedErrorMessage ?? e.Message;
         _log.LogWarning("Operazione {Op} non riuscita: 0x{Hr:X8} {Message}", op, hr, text);

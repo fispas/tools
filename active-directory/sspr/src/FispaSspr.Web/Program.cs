@@ -28,7 +28,7 @@ builder.Services.AddSingleton<TextCatalog>();
 builder.Services.AddSingleton(keys);
 builder.Services.AddSingleton<IMasterKeyProvider>(keys);
 builder.Services.AddSingleton(TimeProvider.System);
-builder.Services.AddSingleton(sp => new OtpChallengeStore(TimeProvider.System, settings.Current.Verification.CodeMaxAttempts));
+builder.Services.AddSingleton(sp => new OtpChallengeStore(TimeProvider.System, () => settings.Current.Verification.CodeMaxAttempts));
 builder.Services.AddSingleton<SlidingWindowRateLimiter>();
 builder.Services.AddSingleton<SessionStore>();
 builder.Services.AddSingleton<AdDirectory>();
@@ -90,6 +90,21 @@ app.Use(async (ctx, next) =>
     await next();
 });
 
+// lingua della richiesta: intestazione X-Lang (impostata dall'interfaccia), parametro lang o Accept-Language.
+// Prima della gestione degli errori, cosi' anche i messaggi di errore generici sono nella lingua dell'utente.
+app.Use(async (ctx, next) =>
+{
+    string? lang = ctx.Request.Headers["X-Lang"];
+    if (string.IsNullOrEmpty(lang)) lang = ctx.Request.Query["lang"];
+    if (string.IsNullOrEmpty(lang))
+    {
+        var al = ctx.Request.Headers.AcceptLanguage.ToString();
+        if (al.Length >= 2) lang = al[..2];
+    }
+    TextCatalog.Current = lang is { Length: >= 2 } && lang.Length <= 8 ? lang[..2].ToLowerInvariant() : null;
+    await next();
+});
+
 // errori del portale come problem+json; nessun dettaglio interno verso il client
 app.Use(async (ctx, next) =>
 {
@@ -110,27 +125,14 @@ app.Use(async (ctx, next) =>
     }
 });
 
-// lingua della richiesta: intestazione X-Lang (impostata dall'interfaccia), parametro lang o Accept-Language
-app.Use(async (ctx, next) =>
-{
-    string? lang = ctx.Request.Headers["X-Lang"];
-    if (string.IsNullOrEmpty(lang)) lang = ctx.Request.Query["lang"];
-    if (string.IsNullOrEmpty(lang))
-    {
-        var al = ctx.Request.Headers.AcceptLanguage.ToString();
-        if (al.Length >= 2) lang = al[..2];
-    }
-    TextCatalog.Current = lang is { Length: >= 2 } && lang.Length <= 8 ? lang[..2].ToLowerInvariant() : null;
-    await next();
-});
-
 // CSRF: ogni richiesta che modifica qualcosa deve portare il token della sessione
 app.Use(async (ctx, next) =>
 {
     if (ctx.Request.Path.StartsWithSegments("/api") && !HttpMethods.IsGet(ctx.Request.Method) && !HttpMethods.IsHead(ctx.Request.Method))
     {
-        var s = ctx.RequestServices.GetRequiredService<SessionStore>().Get(ctx);
-        if (!SessionStore.CsrfValid(s, ctx.Request.Headers["X-CSRF-Token"]))
+        // nessuna sessione nuova per richieste senza cookie valido: non possono comunque essere legittime
+        var s = ctx.RequestServices.GetRequiredService<SessionStore>().TryGet(ctx);
+        if (s is null || !SessionStore.CsrfValid(s, ctx.Request.Headers["X-CSRF-Token"]))
         {
             ctx.Response.StatusCode = 403;
             var text = ctx.RequestServices.GetRequiredService<TextCatalog>().Get("err.sessionExpired");
@@ -159,9 +161,14 @@ app.Lifetime.ApplicationStarted.Register(() =>
         var tick = 0;
         while (await timer.WaitForNextTickAsync(app.Lifetime.ApplicationStopping).ConfigureAwait(false))
         {
-            services.GetRequiredService<SessionStore>().Purge();
-            services.GetRequiredService<PortalService>().PurgeFlows();
-            services.GetRequiredService<SlidingWindowRateLimiter>().Purge(TimeSpan.FromHours(2));
+            try
+            {
+                services.GetRequiredService<SessionStore>().Purge();
+                services.GetRequiredService<PortalService>().PurgeFlows();
+                // 25 ore: il limite giornaliero delle verifiche fallite deve sopravvivere alla pulizia
+                services.GetRequiredService<SlidingWindowRateLimiter>().Purge(TimeSpan.FromHours(25));
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException) { services.GetRequiredService<ILogger<Program>>().LogError(ex, "Pulizia periodica non riuscita"); }
             try
             {
                 TextCatalog.Current = null;

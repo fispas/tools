@@ -1,6 +1,6 @@
 # sspr — Self Service Password Reset (on-prem)
 
-> **Versione 0.4.0** — motore, servizio web, portale utenti multilingua, pannello di amministrazione completamente personalizzabile con report, avvisi di scadenza, campagne di registrazione, inoltro a SIEM e installer guidato scritti. **Mai compilato né eseguito finora**: la prima verifica reale è la pipeline GitHub Actions, poi un'installazione di prova in laboratorio. Su richiesta, il progetto vive qui in `fispas/tools`, anche se è un'applicazione web.
+> **Versione 0.5.0** — motore, servizio web (.NET 10 LTS), portale utenti multilingua, pannello di amministrazione completamente personalizzabile con report, avvisi di scadenza, campagne di registrazione, inoltro a SIEM e installer guidato scritti. **Mai compilato né eseguito finora**: la prima verifica reale è la pipeline GitHub Actions, poi un'installazione di prova in laboratorio. Su richiesta, il progetto vive qui in `fispas/tools`, anche se è un'applicazione web.
 
 ## Installazione rapida
 
@@ -87,7 +87,7 @@ Ha un **pannello di amministrazione** per amministratori e help desk. Si install
 | SMS | Gratuito: [SMS Gateway for Android](https://sms-gate.app) in modalità locale (telefono Android con SIM in LAN), connettore HTTP generico per altri provider |
 | Archivio dei metodi registrati | Attributi AD dedicati (estensione dello schema), confidenziali e cifrati |
 | Esposizione | Solo LAN / VPN |
-| Motore | Il più solido, **ASP.NET Core 8**, senza precludere il passaggio a Node.js: contratto API, formato dei dati e cifratura sono documentati e indipendenti dal linguaggio |
+| Motore | Il più solido, **ASP.NET Core** (oggi .NET 10 LTS), senza precludere il passaggio a Node.js: contratto API, formato dei dati e cifratura sono documentati e indipendenti dal linguaggio |
 | Installazione | Procedura guidata unica, pochi clic, configurato e funzionante al termine |
 
 ## Architettura
@@ -95,7 +95,7 @@ Ha un **pannello di amministrazione** per amministratori e help desk. Si install
 ```
 Browser (SPA statica, nessuna CDN esterna)
    |  HTTPS, API REST documentata in api/openapi.yaml
-Servizio Windows "FispaSSPR" (ASP.NET Core 8 self-contained, Kestrel)   <- gira come gMSA
+Servizio Windows "FispaSSPR" (ASP.NET Core 10 self-contained, Kestrel)   <- gira come gMSA
    |-- Directory      : LDAP firmato e sigillato (Kerberos) verso i DC (System.DirectoryServices)
    |-- Enrollment     : attributi AD fispaSspr* cifrati AES-256-GCM
    |-- OTP            : TOTP RFC 6238, codici SMS/email monouso
@@ -131,7 +131,8 @@ Classe ausiliaria `fispaSsprUser` aggiunta alla classe `user`, con gli attributi
 - Da VPN: nome utente e password attuale.
 - TOTP: QR code e verifica di un codice. Cellulare ed email: codice di conferma inviato e verificato.
 - Numero minimo di metodi configurabile, predefinito 2.
-- Ogni modifica dei metodi viene notificata su tutti i metodi già registrati.
+- Ogni modifica dei metodi viene notificata su tutti i metodi già registrati; la **prima registrazione** viene segnalata all'email aziendale (non ci sono altri recapiti da avvisare).
+- Prima registrazione solo dal PC aziendale (accesso Windows): attiva come impostazione consigliata dell'installer.
 
 **Cambio password** (password attuale nota)
 - Cambio eseguito *come l'utente*, quindi rispetta cronologia ed età minima.
@@ -142,7 +143,7 @@ Classe ausiliaria `fispaSsprUser` aggiunta alla classe `user`, con gli attributi
 2. Scelta del metodo tra quelli registrati, mostrati mascherati (`+39 *** *** 123`, `m***@g***.com`).
 3. Verifica di uno o due codici (configurabile; due metodi per il reset come impostazione predefinita consigliata).
 4. Nuova password con verifica dal vivo di policy e password compromesse.
-5. Reset eseguito dal gMSA, sblocco se necessario, notifica su tutti i metodi.
+5. Reset eseguito dal gMSA **con cronologia ed età minima della password** (controllo LDAP_SERVER_POLICY_HINTS, come il writeback di Entra; disattivabile), sblocco se necessario, chiusura delle altre sessioni dell'utente, notifica su tutti i metodi.
 
 **Sblocco**: stessa verifica del reset, poi `lockoutTime = 0` e notifica.
 
@@ -163,7 +164,7 @@ Classe ausiliaria `fispaSsprUser` aggiunta alla classe `user`, con gli attributi
   - SMTP, gateway SMS, aspetto (logo, nome azienda, testi);
   - password compromesse.
 - **Stato**: connessione ai DC, test SMTP e SMS, scadenza del certificato, chiave master, versione.
-- Gli **account protetti** non sono mai gestibili né dal portale né dal pannello: adminCount=1, gruppi privilegiati, Protected Users, gruppi esclusi, account di servizio e gMSA.
+- Gli **account protetti** non sono mai gestibili né dal portale né dal pannello: adminCount=1, gruppi privilegiati (anche Cert Publishers, Hyper-V Administrators, Storage Replica Administrators, DnsAdmins e i gruppi di Exchange con diritti su AD), Protected Users, gruppi esclusi, account di servizio e gMSA. Come impostazione predefinita sono esclusi anche gli **operatori del portale** (gruppi admin e help desk): di solito hanno deleghe in AD e un loro reset via SMS sarebbe una scorciatoia verso quei permessi.
 
 ## Requisiti di sicurezza
 
@@ -179,7 +180,9 @@ Classe ausiliaria `fispaSsprUser` aggiunta alla classe `user`, con gli attributi
   - sono monouso e ammettono 5 tentativi;
   - sono salvati solo come HMAC.
 - **Protezione dagli abusi**:
-  - limiti per utente, per IP e globali, blocco progressivo;
+  - limiti per utente, per IP e globali (prima il limite per IP: chi lo supera non consuma il budget di tutti);
+  - **blocco giornaliero**: oltre 10 verifiche fallite in 24 ore (configurabile) reset e conferma d'identità dell'utente restano bloccati fino al giorno dopo;
+  - al limite delle sessioni si eliminano prima quelle anonime meno recenti: chi apre sessioni a raffica non blocca gli utenti autenticati;
   - tempi di risposta costanti;
   - nessuna informazione sull'esistenza o sullo stato degli account.
 - **Password**:
@@ -190,7 +193,7 @@ Classe ausiliaria `fispaSsprUser` aggiunta alla classe `user`, con gli attributi
 - **Conferma d'identità (step-up)**: con un utente già registrato, aggiungere, sostituire o rimuovere metodi e cambiare la password richiedono un codice da un metodo esistente: chi conosce solo la password non può sostituire i metodi. Opzionale: prima registrazione solo da PC aziendale (Windows).
 - **Verifica delle credenziali**: bind LDAP Kerberos firmato e cifrato più "Who am I": l'identità autenticata deve coincidere con l'utente (niente fallback su Guest).
 - **Anti-enumerazione**: flussi finti indistinguibili, tempi minimi di risposta configurabili, codici di reset inviati in background, regole delle password del singolo utente solo dopo la verifica.
-- **Sessioni**: identificativo e token CSRF nuovi a ogni login e logout, scadenza per inattività e assoluta, limite al numero di sessioni; sessione del pannello limitata nel tempo con ripetizione del secondo fattore e limite ai codici errati per operatore.
+- **Sessioni**: identificativo e token CSRF nuovi a ogni login e logout, scadenza per inattività e assoluta, limite al numero di sessioni, chiusura delle altre sessioni dell'utente dopo cambio o reset della password; sessione del pannello limitata nel tempo con ripetizione del secondo fattore e limite ai codici errati per operatore.
 - **Aspetto**: file caricati validati dai byte, serviti con CSP `sandbox`; nessun percorso di file arbitrario in configurazione; testi personalizzati sempre come testo semplice; CSS personalizzato filtrato; colori e carattere validati.
 - **Export CSV dell'audit** protetto dalla formula injection.
 - **Audit**: Registro eventi `SSPR` con ID documentati, utile anche alla futura dashboard di monitoraggio AD; notifiche all'utente per reset, sblocco e modifica dei metodi.
@@ -205,6 +208,7 @@ Classe ausiliaria `fispaSsprUser` aggiunta alla classe `user`, con gli attributi
 6. Documentazione utente e amministratore, pagina da distribuire agli utenti.
 
 ## Changelog
+- **0.5.0** — **.NET 10 LTS** (.NET 8 esce dal supporto il 10 novembre 2026). Sicurezza: reset con cronologia ed età minima della password (LDAP_SERVER_POLICY_HINTS), blocco giornaliero delle verifiche fallite, operatori del portale e altri gruppi privilegiati (Cert Publishers, Hyper-V Administrators, Storage Replica Administrators, DnsAdmins, Exchange) esclusi dal self-service, avviso all'email aziendale alla prima registrazione, chiusura delle altre sessioni dopo cambio o reset, limite per IP prima di quello globale, sessioni anonime sacrificabili al limite, nessuna sessione creata da richieste senza token, email accettate solo in formato stretto, inoltro SIEM/webhook che non si ferma mai su un errore. Installer: proprietario e permessi della cartella dati rafforzati (chiavi in sola lettura per il servizio), prima registrazione solo da PC aziendale come scelta consigliata. Correzioni: requisiti della password nella lingua dell'utente, avvisi di scadenza con recupero dei giorni saltati e senza doppioni anche con *Esegui ora*, campagna ferma se la registrazione è disattivata, errori di directory delle attività nell'audit, report con password scadute o da cambiare, eventi esatti nella scheda utente, tentativi dei codici modificabili senza riavvio, webhook anche in formato Teams (Adaptive Card).
 - **0.4.0** — portale multilingua (italiano e inglese, selettore in intestazione, testi personalizzabili per lingua); avvisi di scadenza della password e campagna di registrazione pianificati, con *Esegui ora* (eventi 1700-1702); report registrazioni e scadenze con CSV; inoltro dell'audit a syslog/SIEM e webhook; nuova grafica del portale e del pannello (icone, indicatori, schede, tabelle ordinabili). Validazione delle nuove impostazioni.
 - **0.3.0** — personalizzazione completa dal pannello (logo, icona, sfondo, colori, carattere, CSS, avviso, tutti i testi, notifiche per evento e canale, funzioni attivabili, impostazioni granulari, esporta/importa); editor della configurazione a schede al posto del JSON. Sicurezza: conferma d'identità per modifiche ai metodi e cambio password, prima registrazione solo da Windows (opzionale), verifica credenziali con LDAP "Who am I", rotazione della sessione al logout, scadenze di sessione utente e pannello, limite ai codici errati del secondo fattore, invio dei codici di reset in background, regole PSO solo dopo la verifica, solo oggetti utente da SID, file dell'aspetto validati, CSV senza formula injection, pulizia dell'audit, notifiche anche per le azioni dell'help desk (prima dell'azzeramento). `restore` chiede la password da console.
 - **0.2.0** — servizio web (`FispaSspr.Web`), portale utenti, pannello di amministrazione con 2FA operatori, installer guidato `Install-FispaSSPR.ps1` (gMSA, schema, deleghe, certificato, servizio), pacchetto pubblicato dalla CI.

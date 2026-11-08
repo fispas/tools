@@ -1,26 +1,26 @@
 <Project Sdk="Microsoft.NET.Sdk.Web">
 
   <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>latest</LangVersion>
     <RootNamespace>FispaSspr.Web</RootNamespace>
     <AssemblyName>FispaSSPR</AssemblyName>
-    <Version>0.4.0</Version>
+    <Version>0.5.0</Version>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <SelfContained>true</SelfContained>
     <InvariantGlobalization>false</InvariantGlobalization>
-    <!-- Il servizio gira solo su Windows (AD, DPAPI-NG, servizio Windows) -->
+    <!-- .NET 10 LTS (supporto fino a novembre 2028). Il servizio gira solo su Windows (AD, DPAPI-NG, servizio Windows) -->
     <NoWarn>$(NoWarn);CA1416</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.AspNetCore.Authentication.Negotiate" Version="8.0.33" />
-    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="8.0.1" />
-    <PackageReference Include="System.DirectoryServices" Version="8.0.0" />
-    <PackageReference Include="System.DirectoryServices.Protocols" Version="8.0.2" />
-    <PackageReference Include="System.Diagnostics.EventLog" Version="8.0.1" />
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.Negotiate" Version="10.0.14" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.14" />
+    <PackageReference Include="System.DirectoryServices" Version="10.0.14" />
+    <PackageReference Include="System.DirectoryServices.Protocols" Version="10.0.14" />
+    <PackageReference Include="System.Diagnostics.EventLog" Version="10.0.14" />
     <PackageReference Include="QRCoder" Version="1.6.0" />
   </ItemGroup>
 

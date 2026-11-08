@@ -301,7 +301,7 @@ paths:
       summary: Utenti delle OU abilitate con stato della registrazione, metodi e scadenza della password (JSON o CSV)
       security: [ { adminWindows: [] } ]
       parameters: [ { name: format, in: query, required: false, schema: { type: string, enum: [csv] } } ]
-      responses: { '200': { description: 'Elenco { userName, displayName, mail, enrolled, methods, passwordExpires } o file CSV' } }
+      responses: { '200': { description: 'Elenco { userName, displayName, mail, enrolled, methods, passwordExpires, passwordMustChange } o file CSV' } }
   /admin/jobs/{job}/run:
     post:
       tags: [Amministrazione]
@@ -391,7 +391,7 @@ components:
         availableMethods: { type: array, items: { type: string, enum: [totp, sms, email] } }
     PasswordCheck:
       type: object
-      properties: { valid: { type: boolean }, errors: { type: array, items: { type: string } }, minLength: { type: integer } }
+      properties: { valid: { type: boolean }, errors: { type: array, items: { type: string }, description: 'Requisiti mancanti nella lingua della richiesta' }, codes: { type: array, items: { type: string }, description: 'Codici stabili degli stessi requisiti (es. pwd.err.minLength), nello stesso ordine' }, minLength: { type: integer } }
     ChangeRequest:
       type: object
       required: [currentPassword, newPassword]

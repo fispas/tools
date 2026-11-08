@@ -65,32 +65,48 @@ public sealed class SessionStore
 
     private bool Alive(SessionData s, DateTimeOffset now) => now - s.LastSeen < Idle && now - s.Created < Absolute;
 
-    /// <summary>Sessione della richiesta: una sola per richiesta (memorizzata in HttpContext.Items), creata se manca o e' scaduta.</summary>
-    public SessionData Get(HttpContext ctx)
+    /// <summary>Sessione esistente e valida della richiesta, senza crearne una nuova.</summary>
+    public SessionData? TryGet(HttpContext ctx)
     {
         if (ctx.Items.TryGetValue(ItemKey, out var cached) && cached is SessionData c) return c;
         var now = _time.GetUtcNow();
-        if (ctx.Request.Cookies.TryGetValue(CookieName, out var id) && id is not null && id.Length < 100 && _sessions.TryGetValue(id, out var s))
+        if (ctx.Request.Cookies.TryGetValue(CookieName, out var id) && id is not null && id.Length < 100 && _sessions.TryGetValue(id, out var s) && Alive(s, now))
         {
-            if (Alive(s, now))
-            {
-                s.LastSeen = now;
-                ctx.Items[ItemKey] = s;
-                return s;
-            }
-            _sessions.TryRemove(id, out _);
+            s.LastSeen = now;
+            ctx.Items[ItemKey] = s;
+            return s;
         }
-        return Create(ctx, now);
+        return null;
+    }
+
+    /// <summary>Sessione della richiesta: una sola per richiesta (memorizzata in HttpContext.Items), creata se manca o e' scaduta.</summary>
+    public SessionData Get(HttpContext ctx)
+    {
+        var s = TryGet(ctx);
+        if (s is not null) return s;
+        if (ctx.Request.Cookies.TryGetValue(CookieName, out var id) && id is not null) _sessions.TryRemove(id, out _);
+        return Create(ctx, _time.GetUtcNow());
+    }
+
+    /// <summary>
+    /// Posto per una nuova sessione. Al limite si eliminano prima le scadute, poi le anonime meno recenti:
+    /// chi apre sessioni a raffica non puo' bloccare gli utenti gia' autenticati.
+    /// </summary>
+    private void MakeRoom()
+    {
+        var max = Math.Max(1000, _settings.Current.Sessions.MaxSessions);
+        if (_sessions.Count < max) return;
+        Purge();
+        if (_sessions.Count < max) return;
+        var excess = _sessions.Count - max * 9 / 10;
+        foreach (var old in _sessions.Values.Where(x => !x.Authenticated).OrderBy(x => x.LastSeen).Take(excess).Select(x => x.Id).ToList())
+            _sessions.TryRemove(old, out _);
+        if (_sessions.Count >= max) throw new PortalException(503, "Servizio momentaneamente occupato: riprovare tra poco.");
     }
 
     private SessionData Create(HttpContext ctx, DateTimeOffset now)
     {
-        if (_sessions.Count >= Math.Max(1000, _settings.Current.Sessions.MaxSessions))
-        {
-            Purge();
-            if (_sessions.Count >= Math.Max(1000, _settings.Current.Sessions.MaxSessions))
-                throw new PortalException(503, "Servizio momentaneamente occupato: riprovare tra poco.");
-        }
+        MakeRoom();
         var created = new SessionData { Id = NewId(), Csrf = NewId(), Created = now, LastSeen = now };
         _sessions[created.Id] = created;
         ctx.Response.Cookies.Append(CookieName, created.Id, new CookieOptions
@@ -132,6 +148,15 @@ public sealed class SessionStore
     }
 
     public int Count => _sessions.Count;
+
+    /// <summary>Chiude le altre sessioni di un utente (dopo cambio o reset della password), tranne quella indicata.</summary>
+    public int RevokeUser(string sid, string? exceptId)
+    {
+        var n = 0;
+        foreach (var kv in _sessions)
+            if (kv.Key != exceptId && string.Equals(kv.Value.UserSid, sid, StringComparison.OrdinalIgnoreCase) && _sessions.TryRemove(kv.Key, out _)) n++;
+        return n;
+    }
 
     public static bool CsrfValid(SessionData s, string? header) =>
         !string.IsNullOrEmpty(header) && header.Length < 100 && CryptographicOperations.FixedTimeEquals(Encoding.ASCII.GetBytes(s.Csrf), Encoding.ASCII.GetBytes(header));

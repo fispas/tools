@@ -25,8 +25,10 @@ public static class AccountProtection
     // RID dei gruppi privilegiati di dominio
     private static readonly string[] PrivilegedRids =
     {
+        "-498", // Enterprise Read-only Domain Controllers
         "-512", // Domain Admins
         "-516", // Domain Controllers
+        "-517", // Cert Publishers
         "-518", // Schema Admins
         "-519", // Enterprise Admins
         "-520", // Group Policy Creator Owners
@@ -45,6 +47,8 @@ public static class AccountProtection
         "S-1-5-32-550", // Print Operators
         "S-1-5-32-551", // Backup Operators
         "S-1-5-32-552", // Replicator
+        "S-1-5-32-578", // Hyper-V Administrators (controllo delle VM dei DC)
+        "S-1-5-32-582", // Storage Replica Administrators
     };
 
     private static readonly HashSet<string> ServiceClasses = new(StringComparer.OrdinalIgnoreCase)

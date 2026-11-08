@@ -137,6 +137,7 @@ public sealed class AuditLog : IAuditLog
 
     // ------------------------------------------------------------------ inoltro a SIEM (syslog) e webhook, fuori dal percorso della richiesta
 
+    /// <summary>Un errore di inoltro (rete, configurazione) non deve mai fermare il ciclo: si registra e si passa all'evento successivo.</summary>
     private async Task ForwardLoop()
     {
         await foreach (var rec in _forward.Reader.ReadAllAsync().ConfigureAwait(false))
@@ -145,21 +146,43 @@ public sealed class AuditLog : IAuditLog
             if (a.SyslogEnabled && !string.IsNullOrWhiteSpace(a.SyslogHost))
             {
                 try { await SendSyslog(a, rec).ConfigureAwait(false); }
-                catch (Exception ex) when (ex is System.Net.Sockets.SocketException or IOException or TimeoutException or OperationCanceledException) { _log.LogWarning(ex, "Inoltro syslog non riuscito"); }
+                catch (Exception ex) { _log.LogWarning(ex, "Inoltro syslog non riuscito"); }
             }
             if (!string.IsNullOrWhiteSpace(a.WebhookUrl) && (!a.WebhookOnlyIssues || rec.Outcome != nameof(AuditOutcome.Success) || rec.Actor is not null || rec.EventId == (int)AuditEventId.JobRun))
             {
-                try
-                {
-                    var text = $"[FispaSSPR] {rec.Event} ({rec.EventId}) - {rec.Outcome}: {rec.Message}" +
-                               (rec.TargetUser is null ? "" : $" | utente {rec.TargetUser}") + (rec.Actor is null ? "" : $" | operatore {rec.Actor}") + (rec.ClientIp is null ? "" : $" | client {rec.ClientIp}");
-                    using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-                    using var resp = await _http.CreateClient("webhook").PostAsync(a.WebhookUrl, new StringContent(JsonSerializer.Serialize(new { text }), Encoding.UTF8, "application/json"), cts.Token).ConfigureAwait(false);
-                    if (!resp.IsSuccessStatusCode) _log.LogWarning("Webhook: risposta {Status}", (int)resp.StatusCode);
-                }
-                catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException or InvalidOperationException) { _log.LogWarning(ex, "Inoltro al webhook non riuscito"); }
+                try { await SendWebhook(a, rec).ConfigureAwait(false); }
+                catch (Exception ex) { _log.LogWarning(ex, "Inoltro al webhook non riuscito"); }
             }
         }
+    }
+
+    private async Task SendWebhook(AuditSettings a, Record rec)
+    {
+        var text = $"[FispaSSPR] {rec.Event} ({rec.EventId}) - {rec.Outcome}: {rec.Message}" +
+                   (rec.TargetUser is null ? "" : $" | utente {rec.TargetUser}") + (rec.Actor is null ? "" : $" | operatore {rec.Actor}") + (rec.ClientIp is null ? "" : $" | client {rec.ClientIp}");
+        // Teams (flussi di lavoro "Quando viene ricevuta una richiesta webhook"): Adaptive Card; altrimenti {"text": ...}
+        object payload = string.Equals(a.WebhookFormat, "teams", StringComparison.OrdinalIgnoreCase)
+            ? new
+            {
+                type = "message",
+                attachments = new[]
+                {
+                    new
+                    {
+                        contentType = "application/vnd.microsoft.card.adaptive",
+                        content = new Dictionary<string, object>
+                        {
+                            ["$schema"] = "http://adaptivecards.io/schemas/adaptive-card.json", ["type"] = "AdaptiveCard", ["version"] = "1.4",
+                            ["body"] = new object[] { new { type = "TextBlock", text, wrap = true } },
+                        },
+                    },
+                },
+            }
+            : new { text };
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        using var content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
+        using var resp = await _http.CreateClient("webhook").PostAsync(new Uri(a.WebhookUrl), content, cts.Token).ConfigureAwait(false);
+        if (!resp.IsSuccessStatusCode) _log.LogWarning("Webhook: risposta {Status}", (int)resp.StatusCode);
     }
 
     /// <summary>RFC 5424 su UDP oppure TCP (framing a conteggio di ottetti, RFC 6587). Facility authpriv (10).</summary>
@@ -205,7 +228,8 @@ public sealed class AuditLog : IAuditLog
         }
     }
 
-    public IReadOnlyList<Record> Query(DateTimeOffset from, DateTimeOffset to, string? user, int? eventId, int max)
+    /// <param name="exactUser">true = solo gli eventi di quell'utente (scheda utente); false = ricerca per parte del nome.</param>
+    public IReadOnlyList<Record> Query(DateTimeOffset from, DateTimeOffset to, string? user, int? eventId, int max, bool exactUser = false)
     {
         var list = new List<Record>();
         if (!Directory.Exists(SsprPaths.Audit)) return list;
@@ -222,7 +246,13 @@ public sealed class AuditLog : IAuditLog
                 try { r = JsonSerializer.Deserialize<Record>(l); } catch (JsonException) { continue; }
                 if (r is null || r.Time < from || r.Time > to) continue;
                 if (eventId is not null && r.EventId != eventId) continue;
-                if (!string.IsNullOrEmpty(user) && !(r.TargetUser ?? string.Empty).Contains(user, StringComparison.OrdinalIgnoreCase) && !(r.Actor ?? string.Empty).Contains(user, StringComparison.OrdinalIgnoreCase)) continue;
+                if (!string.IsNullOrEmpty(user))
+                {
+                    var match = exactUser
+                        ? string.Equals(r.TargetUser, user, StringComparison.OrdinalIgnoreCase) || string.Equals(r.Actor, user, StringComparison.OrdinalIgnoreCase)
+                        : (r.TargetUser ?? string.Empty).Contains(user, StringComparison.OrdinalIgnoreCase) || (r.Actor ?? string.Empty).Contains(user, StringComparison.OrdinalIgnoreCase);
+                    if (!match) continue;
+                }
                 list.Add(r);
             }
         }

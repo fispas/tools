@@ -134,4 +134,16 @@ public class OtpChallengeStoreTests
         Assert.Equal(OtpVerifyResult.TooManyAttempts, store.Verify(c.Id, "u", wrong));
         Assert.Equal(OtpVerifyResult.NotFound, store.Verify(c.Id, "u", c.Code));
     }
+
+    [Fact]
+    public void Max_attempts_follow_the_current_configuration()
+    {
+        var max = 5;
+        var store = new OtpChallengeStore(new FakeTimeProvider(), () => max);
+        var c = store.Create("u", "sms", TimeSpan.FromMinutes(5));
+        var wrong = c.Code == "000000" ? "111111" : "000000";
+        max = 2;
+        Assert.Equal(OtpVerifyResult.Invalid, store.Verify(c.Id, "u", wrong));
+        Assert.Equal(OtpVerifyResult.TooManyAttempts, store.Verify(c.Id, "u", wrong));
+    }
 }

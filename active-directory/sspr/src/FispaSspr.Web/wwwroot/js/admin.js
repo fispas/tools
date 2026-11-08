@@ -164,11 +164,11 @@ async function loadReport() {
   if (!rows) { $('#r-rows').replaceChildren(); return; }
   report = rows;
   const enrolled = rows.filter(r => r.enrolled).length;
-  const soon = rows.filter(r => expiresWithin(r, 14)).length;
+  const soon = rows.filter(r => r.passwordMustChange || expiresWithin(r, 14)).length;
   const pct = rows.length ? Math.round(enrolled * 100 / rows.length) : 0;
   const k = (v, l, tone) => el('div', { class: 'kpi' + (tone ? ' ' + tone : '') }, el('b', null, v), l);
   $('#r-kpis').replaceChildren(k(rows.length, 'Utenti nelle OU abilitate'), k(`${enrolled} (${pct}%)`, 'Registrati', pct >= 80 ? 'ok' : 'warn'),
-    k(rows.length - enrolled, 'Da registrare', rows.length - enrolled ? 'warn' : 'ok'), k(soon, 'Password in scadenza entro 14 giorni', soon ? 'warn' : 'ok'));
+    k(rows.length - enrolled, 'Da registrare', rows.length - enrolled ? 'warn' : 'ok'), k(soon, 'Password scadute o in scadenza entro 14 giorni', soon ? 'warn' : 'ok'));
   drawReport();
 }
 function expiresWithin(r, days) {
@@ -184,14 +184,15 @@ function sortReport(k) {
 function drawReport() {
   const term = $('#r-q').value.toLowerCase(), st = $('#r-st').value;
   const rows = report.filter(r => (!term || [r.userName, r.displayName, r.mail].some(x => (x || '').toLowerCase().includes(term)))
-    && (!st || (st === 'yes' && r.enrolled) || (st === 'no' && !r.enrolled) || (st === 'exp' && expiresWithin(r, 14))));
+    && (!st || (st === 'yes' && r.enrolled) || (st === 'no' && !r.enrolled) || (st === 'exp' && (r.passwordMustChange || expiresWithin(r, 14)))));
   const { k, dir } = reportSort;
   rows.sort((a, b) => { const x = a[k] ?? '', y = b[k] ?? ''; return (x > y ? 1 : x < y ? -1 : 0) * dir; });
   $('#r-rows').replaceChildren(...rows.slice(0, 1000).map(r => el('tr', null,
     el('td', null, r.userName), el('td', null, r.displayName || ''), el('td', null, r.mail || ''),
     el('td', null, r.enrolled ? el('span', { class: 'badge ok' }, 'registrato') : el('span', { class: 'badge warn' }, 'non registrato')),
     el('td', null, r.methods || ''),
-    el('td', null, r.passwordExpires ? el('span', { class: expiresWithin(r, 14) ? 'badge warn' : '' }, fmt(r.passwordExpires)) : el('span', { class: 'muted' }, 'non scade')))));
+    el('td', null, r.passwordMustChange ? el('span', { class: 'badge err' }, 'scaduta / da cambiare')
+      : r.passwordExpires ? el('span', { class: expiresWithin(r, 14) ? 'badge warn' : '' }, fmt(r.passwordExpires)) : el('span', { class: 'muted' }, 'non scade')))));
   $('#r-count').textContent = rows.length > 1000 ? `Mostrati 1000 di ${rows.length}: usare il filtro o l'esportazione CSV.` : `${rows.length} utenti.`;
 }
 
@@ -300,6 +301,7 @@ const SECTIONS = [
       { path: 'passwords.breachedCheck', type: 'select', label: 'Password compromesse', options: [['OnlineKAnonymity', 'Online (HIBP, k-anonymity: escono solo 5 caratteri dell\'hash)'], ['OfflineList', 'Lista locale'], ['Off', 'Nessun controllo']] },
       text('passwords.offlineListPath', 'File della lista locale', 'Percorso sul server, una password o hash SHA-1 per riga.'),
       bool('passwords.blockWhenBreachCheckUnavailable', 'Rifiuta la password se il controllo non è disponibile'),
+      bool('passwords.enforceHistoryOnReset', 'Nel reset applica cronologia ed età minima della password di dominio', "Come il writeback di Entra (LDAP_SERVER_POLICY_HINTS): impedisce di reimpostare una password già usata. Chi ha cambiato la password da meno dell'età minima dovrà rivolgersi all'help desk."),
     ] },
   ] },
   { id: 'security', title: 'Sicurezza', groups: [
@@ -308,6 +310,7 @@ const SECTIONS = [
       int('rateLimits.perIpPerHour', 'Richieste per indirizzo IP all\'ora', '', 1, 10000),
       int('rateLimits.globalPerMinute', 'Richieste totali al minuto', '', 1, 10000),
       int('rateLimits.codesPerUserPerHour', 'Codici inviati per utente all\'ora', '', 1, 50),
+      int('rateLimits.verifyFailuresPerDay', 'Verifiche fallite per utente nelle 24 ore', "Oltre questo numero reset e conferma d'identità restano bloccati fino al giorno dopo (contro i tentativi a ripetizione sui codici).", 3, 100),
     ] },
     { title: 'Sessioni', fields: [
       int('sessions.userIdleMinutes', 'Inattività massima della sessione utente (minuti)', '', 2, 240),
@@ -329,7 +332,8 @@ const SECTIONS = [
       { path: 'audit.syslogProtocol', type: 'select', label: 'Protocollo', options: [['Udp', 'UDP'], ['Tcp', 'TCP (octet counting)']] },
     ] },
     { title: 'Webhook (Teams, Slack, chat)', fields: [
-      text('audit.webhookUrl', 'URL del webhook', 'Riceve un POST JSON {"text": "..."}. Vuoto = disattivato. Preferire https.'),
+      text('audit.webhookUrl', 'URL del webhook', 'Vuoto = disattivato. Preferire https.'),
+      { path: 'audit.webhookFormat', type: 'select', label: 'Formato', options: [['text', 'Testo {"text": ...} (Slack, Google Chat, Mattermost, Rocket.Chat)'], ['teams', 'Microsoft Teams (flusso di lavoro con webhook, Adaptive Card)']] },
       bool('audit.webhookOnlyIssues', 'Solo eventi rilevanti', 'Fallimenti, blocchi e operazioni del pannello; altrimenti tutti gli eventi.'),
     ] },
   ] },
@@ -337,7 +341,8 @@ const SECTIONS = [
     { title: 'Active Directory', fields: [
       text('directory.domainController', 'Domain controller', 'Vuoto = individuato automaticamente.'),
       { path: 'directory.allowedOus', type: 'list', label: 'OU abilitate', help: "Distinguished name, una per riga. Il gMSA ha le deleghe solo su quelle scelte nell'installazione." },
-      { path: 'directory.excludedGroupSids', type: 'list', label: 'SID dei gruppi esclusi', help: 'Uno per riga. Gli account privilegiati sono sempre esclusi.' },
+      { path: 'directory.excludedGroupSids', type: 'list', label: 'SID dei gruppi esclusi', help: 'Uno per riga. Gli account privilegiati sono sempre esclusi, compresi DnsAdmins e i gruppi di Exchange con diritti su AD.' },
+      bool('directory.excludeOperatorGroups', 'Escludi gli operatori del portale (gruppi admin e help desk)', 'Consigliato: di solito hanno deleghe in AD, un reset via SMS o email sarebbe una scorciatoia verso quei permessi. Usano Ctrl+Alt+Canc o gli strumenti di AD.'),
     ] },
   ] },
   { id: 'advanced', title: 'Avanzate', custom: renderAdvanced },

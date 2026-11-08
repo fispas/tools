@@ -93,7 +93,7 @@
         <div class="kpis" id="r-kpis"></div>
         <form id="f-report" class="row">
           <div><label for="r-q">Filtra</label><input id="r-q" maxlength="100" placeholder="Nome, utente o email"></div>
-          <div><label for="r-st">Stato</label><select id="r-st"><option value="">Tutti</option><option value="no">Non registrati</option><option value="yes">Registrati</option><option value="exp">Password in scadenza (14 giorni)</option></select></div>
+          <div><label for="r-st">Stato</label><select id="r-st"><option value="">Tutti</option><option value="no">Non registrati</option><option value="yes">Registrati</option><option value="exp">Password scadute o in scadenza (14 giorni)</option></select></div>
         </form>
         <table class="sortable"><thead><tr><th data-k="userName">Utente</th><th data-k="displayName">Nome</th><th data-k="mail">Email aziendale</th><th data-k="enrolled">Registrazione</th><th data-k="methods">Metodi</th><th data-k="passwordExpires">Scadenza password</th></tr></thead><tbody id="r-rows"></tbody></table>
         <p class="muted" id="r-count"></p>

@@ -6,7 +6,8 @@ namespace FispaSspr.Core.Security;
 /// <summary>Validazione e normalizzazione degli input inseriti dagli utenti.</summary>
 public static partial class Normalization
 {
-    [GeneratedRegex(@"^[^\s@]{1,64}@[^\s@]{1,253}\.[A-Za-z]{2,24}$", RegexOptions.CultureInvariant)]
+    // parte locale: solo caratteri "atext" (niente virgolette, virgole, spazi, < >); dominio: etichette DNS (IDN in forma punycode)
+    [GeneratedRegex(@"^[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+)*@(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,24}$", RegexOptions.CultureInvariant)]
     private static partial Regex EmailRegex();
 
     /// <summary>Numero in formato E.164 (+393331234567). Senza prefisso internazionale si usa <paramref name="defaultCountryCode"/>.</summary>
@@ -35,6 +36,7 @@ public static partial class Normalization
         var s = input.Trim();
         if (s.Length > 254 || !EmailRegex().IsMatch(s)) return null;
         var at = s.LastIndexOf('@');
+        if (at > 64) return null;
         return s[..at] + "@" + s[(at + 1)..].ToLowerInvariant();
     }
 

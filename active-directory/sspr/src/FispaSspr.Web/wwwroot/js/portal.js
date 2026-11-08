@@ -272,7 +272,8 @@ function liveCheck(input, list, flowId) {
       try {
         const r = await Api.post('/password/check', { password: value, flowId: flowId() });
         const items = [el('li', { class: value.length >= r.minLength ? 'okk' : 'bad' }, T('pwd.minLength', { min: r.minLength }))];
-        r.errors.filter(e => !/caratteri\.?$/.test(e) || !/almeno/i.test(e)).forEach(e => items.push(el('li', { class: 'bad' }, e)));
+        // la lunghezza minima ha gia' la sua riga: gli altri requisiti mancanti nella lingua dell'utente
+        (r.errors || []).forEach((e, i) => { if ((r.codes || [])[i] !== 'pwd.err.minLength') items.push(el('li', { class: 'bad' }, e)); });
         if (r.valid) items.push(el('li', { class: 'okk' }, T('pwd.valid')));
         $(list).replaceChildren(...items);
       } catch (e) { /* la verifica completa avviene comunque all'invio */ }
@@ -315,7 +316,7 @@ async function flowVerify(ev) {
   try { busy(ev.submitter, true); f = await Api.post(`/reset/${State.flow.flowId}/verify`, { code: $('#fl-code').value }); }
   catch (e) {
     message('#v-flow', 'err', errorText(e));
-    if (e.code === 'err.tooManyCodes' || e.code === 'err.flowExpired') { State.flow = null; setTimeout(() => go('home'), 2500); }
+    if (e.code === 'err.tooManyCodes' || e.code === 'err.flowExpired' || e.code === 'err.verifyBlocked') { State.flow = null; setTimeout(() => go('home'), 4000); }
     return;
   } finally { busy(ev.submitter, false); }
   State.flow = f;

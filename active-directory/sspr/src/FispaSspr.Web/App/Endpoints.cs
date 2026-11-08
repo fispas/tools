@@ -262,7 +262,7 @@ public static class Endpoints
             var rows = await a.EnrollmentReport(Sess(c), c.RequestAborted);
             if (format != "csv") return Results.Ok(rows);
             var sb = new StringBuilder("Utente;Nome;Email aziendale;Registrato;Metodi;Scadenza password\r\n");
-            foreach (var r in rows) sb.Append(string.Join(';', new[] { CsvCell(r.UserName), CsvCell(r.DisplayName), CsvCell(r.Mail), CsvCell(r.Enrolled ? "si" : "no"), CsvCell(r.Methods), CsvCell(r.PasswordExpires?.ToString("yyyy-MM-dd HH:mm", System.Globalization.CultureInfo.InvariantCulture)) })).Append("\r\n");
+            foreach (var r in rows) sb.Append(string.Join(';', new[] { CsvCell(r.UserName), CsvCell(r.DisplayName), CsvCell(r.Mail), CsvCell(r.Enrolled ? "si" : "no"), CsvCell(r.Methods), CsvCell(r.PasswordMustChange ? "scaduta / da cambiare" : r.PasswordExpires?.ToString("yyyy-MM-dd HH:mm", System.Globalization.CultureInfo.InvariantCulture)) })).Append("\r\n");
             return Results.File(Encoding.UTF8.GetPreamble().Concat(Encoding.UTF8.GetBytes(sb.ToString())).ToArray(), "text/csv; charset=utf-8", "registrazioni.csv");
         });
         adm.MapPost("/jobs/{job}/run", async (HttpContext c, string job, AdminService a, Jobs jobs) =>

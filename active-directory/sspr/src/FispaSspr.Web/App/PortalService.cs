@@ -73,14 +73,15 @@ public sealed class PortalService
     private readonly TimeProvider _time;
     private readonly ILogger<PortalService> _log;
     private readonly TextCatalog _t;
+    private readonly SessionStore _sessions;
     private readonly ConcurrentDictionary<string, Flow> _flows = new(StringComparer.Ordinal);
     private readonly byte[] _fakeKey = RandomNumberGenerator.GetBytes(32);
 
     public PortalService(SettingsStore settings, AdDirectory ad, IMasterKeyProvider keys, SmtpChannel mail, SmsChannel sms, IAuditLog audit,
-        IBreachedPasswordChecker breach, OtpChallengeStore otp, SlidingWindowRateLimiter limiter, TimeProvider time, ILogger<PortalService> log, TextCatalog texts)
+        IBreachedPasswordChecker breach, OtpChallengeStore otp, SlidingWindowRateLimiter limiter, TimeProvider time, ILogger<PortalService> log, TextCatalog texts, SessionStore sessions)
     {
         _settings = settings; _ad = ad; _codec = new EnrollmentCodec(keys); _mail = mail; _sms = sms; _audit = audit;
-        _breach = breach; _otp = otp; _limiter = limiter; _time = time; _log = log; _t = texts;
+        _breach = breach; _otp = otp; _limiter = limiter; _time = time; _log = log; _t = texts; _sessions = sessions;
     }
 
     private SsprSettings S => _settings.Current;
@@ -90,7 +91,24 @@ public sealed class PortalService
 
     private PortalException Err(int status, string key, params (string, object?)[] vars) => new(status, _t.Get(key, vars), code: key);
 
-    public ScopeSettings Scope => new() { AllowedOus = S.Directory.AllowedOus, ExcludedGroupSids = S.Directory.ExcludedGroupSids };
+    /// <summary>
+    /// Ambito: OU abilitate e gruppi esclusi configurati, piu' i gruppi degli operatori del portale (se attivo) e i gruppi
+    /// privilegiati senza RID fisso trovati nel dominio (DnsAdmins, gruppi di Exchange).
+    /// </summary>
+    public ScopeSettings Scope
+    {
+        get
+        {
+            var excluded = new List<string>(S.Directory.ExcludedGroupSids);
+            if (S.Directory.ExcludeOperatorGroups)
+            {
+                if (!string.IsNullOrWhiteSpace(S.Admin.AdminGroupSid)) excluded.Add(S.Admin.AdminGroupSid);
+                if (!string.IsNullOrWhiteSpace(S.Admin.HelpdeskGroupSid)) excluded.Add(S.Admin.HelpdeskGroupSid);
+            }
+            excluded.AddRange(_ad.ExtraPrivilegedGroupSids());
+            return new() { AllowedOus = S.Directory.AllowedOus, ExcludedGroupSids = excluded };
+        }
+    }
 
     public IReadOnlyList<VerificationMethod> AvailableMethods()
     {
@@ -114,11 +132,29 @@ public sealed class PortalService
         throw new PortalException(429, _t.Get("err.rateLimit"), retryAfter: _limiter.RetryAfter(key, Math.Max(1, limit), window), code: "err.rateLimit");
     }
 
+    /// <summary>Prima il limite per IP, poi quello globale: chi supera il proprio limite non consuma piu' il budget di tutti.</summary>
     public void LimitGlobal(string? ip)
     {
-        Limit("global", S.RateLimits.GlobalPerMinute, TimeSpan.FromMinutes(1), null, ip);
         if (!string.IsNullOrEmpty(ip)) Limit("ip:" + ip, S.RateLimits.PerIpPerHour, TimeSpan.FromHours(1), null, ip);
+        Limit("global", S.RateLimits.GlobalPerMinute, TimeSpan.FromMinutes(1), null, ip);
     }
+
+    // ------------------------------------------------------------------ verifiche fallite: blocco giornaliero per utente
+
+    private static readonly TimeSpan FailureWindow = TimeSpan.FromDays(1);
+    private int MaxFailuresPerDay => Math.Clamp(S.RateLimits.VerifyFailuresPerDay, 3, 100);
+
+    /// <summary>Oltre il numero di verifiche fallite nelle 24 ore, reset e conferma d'identita' dell'utente restano bloccati.</summary>
+    private void RequireVerificationAllowed(string subject, string? user, string? ip)
+    {
+        var key = "vfail:" + subject.ToLowerInvariant();
+        var wait = _limiter.RetryAfter(key, MaxFailuresPerDay, FailureWindow);
+        if (wait <= TimeSpan.Zero) return;
+        _ = Audit(AuditEventId.RateLimitTriggered, AuditOutcome.Blocked, user, null, ip, $"Verifiche bloccate per troppi errori nelle ultime 24 ore ({MaxFailuresPerDay})");
+        throw new PortalException(429, _t.Get("err.verifyBlocked"), retryAfter: wait, code: "err.verifyBlocked");
+    }
+
+    private void RecordVerificationFailure(string subject) => _limiter.TryAcquire("vfail:" + subject.ToLowerInvariant(), MaxFailuresPerDay, FailureWindow);
 
     public void LimitLogin(string? name, string? ip)
     {
@@ -213,7 +249,10 @@ public sealed class PortalService
     };
 
     /// <summary>Notifica all'utente sui canali configurati. Gli errori di invio non bloccano l'operazione.</summary>
-    public async Task Notify(DirectoryUser u, Enrollment e, string name, CancellationToken ct, params (string, object?)[] extra)
+    public Task Notify(DirectoryUser u, Enrollment e, string name, CancellationToken ct, params (string, object?)[] extra) => Notify(u, e, name, false, ct, extra);
+
+    /// <param name="alsoCorporate">Anche all'email aziendale, a prescindere dalla configurazione (es. prima registrazione: non ci sono altri recapiti da avvisare).</param>
+    public async Task Notify(DirectoryUser u, Enrollment e, string name, bool alsoCorporate, CancellationToken ct, params (string, object?)[] extra)
     {
         if (!NotificationEnabled(name)) return;
         var vars = new List<(string, object?)>
@@ -227,7 +266,7 @@ public sealed class PortalService
         var targets = new List<(IMessageChannel Ch, string To, string Text)>();
         if (n.ViaPersonalEmail && e.Methods.Contains(VerificationMethod.Email) && _mail.Configured) targets.Add((_mail, e.Email!, body));
         if (n.ViaSms && e.Methods.Contains(VerificationMethod.Sms) && _sms.Configured) targets.Add((_sms, e.Mobile!, sms));
-        if (n.ViaCorporateEmail && _mail.Configured)
+        if ((n.ViaCorporateEmail || alsoCorporate) && _mail.Configured)
         {
             try
             {
@@ -296,6 +335,7 @@ public sealed class PortalService
     public async Task<object> StepUpVerify(SessionData s, string? challengeId, string? code, string? ip, CancellationToken ct)
     {
         var u = await RequireManageableUser(s, ct).ConfigureAwait(false);
+        RequireVerificationAllowed(u.SamAccountName, u.SamAccountName, ip);
         Limit("verify:" + u.Sid, S.RateLimits.PerUserPerHour * 3, TimeSpan.FromHours(1), u.SamAccountName, ip);
         if (string.IsNullOrEmpty(challengeId) || s.StepUpChallengeId != challengeId) throw Err(400, "err.codeRequestNew");
         var (e, _) = await LoadEnrollment(u, ct).ConfigureAwait(false);
@@ -316,6 +356,7 @@ public sealed class PortalService
         }
         if (!ok)
         {
+            RecordVerificationFailure(u.SamAccountName);
             await Audit(AuditEventId.StepUpFailed, AuditOutcome.Failure, u.SamAccountName, null, ip, "Conferma dell'identita' non riuscita").ConfigureAwait(false);
             throw Err(400, "err.codeInvalid");
         }
@@ -365,7 +406,7 @@ public sealed class PortalService
         await SaveEnrollment(u, updated, ct).ConfigureAwait(false);
         s.PendingTotp = null;
         await Audit(AuditEventId.EnrollmentMethodAdded, AuditOutcome.Success, u.SamAccountName, null, ip, "Registrata l'app di autenticazione").ConfigureAwait(false);
-        await Notify(u, e, "methodAdded", ct, ("method", _t.Get("method.totp"))).ConfigureAwait(false);
+        await Notify(u, e, "methodAdded", e.Methods.Count == 0, ct, ("method", _t.Get("method.totp"))).ConfigureAwait(false);
         return EnrollmentStatus(updated, s);
     }
 
@@ -409,8 +450,8 @@ public sealed class PortalService
         s.PendingChallengeId = null; s.PendingDestination = null; s.PendingMethod = null;
         var label = MethodLabel(m, dest: dest);
         await Audit(AuditEventId.EnrollmentMethodAdded, AuditOutcome.Success, u.SamAccountName, null, ip, "Registrato " + label).ConfigureAwait(false);
-        // notifica sui metodi gia' presenti (il vecchio recapito, se sostituito, viene avvisato)
-        await Notify(u, e, "methodAdded", ct, ("method", label)).ConfigureAwait(false);
+        // notifica sui metodi gia' presenti (il vecchio recapito, se sostituito, viene avvisato); alla prima registrazione all'email aziendale
+        await Notify(u, e, "methodAdded", e.Methods.Count == 0, ct, ("method", label)).ConfigureAwait(false);
         return EnrollmentStatus(updated, s);
     }
 
@@ -434,18 +475,29 @@ public sealed class PortalService
 
     // ------------------------------------------------------------------ password
 
-    public async Task<IReadOnlyList<string>> CheckPassword(DirectoryUser u, string? password, CancellationToken ct)
+    /// <summary>Requisito non rispettato nella lingua dell'utente.</summary>
+    private string PwdText(PasswordIssue i) => i.Code switch
+    {
+        PasswordPolicy.MinLength => _t.Get(i.Code, ("min", i.Value)),
+        PasswordPolicy.MaxLength => _t.Get(i.Code, ("max", i.Value)),
+        _ => _t.Get(i.Code),
+    };
+
+    private async Task<List<PasswordIssue>> PasswordIssues(DirectoryUser u, string? password, CancellationToken ct)
     {
         var rules = await _ad.GetPasswordRulesAsync(u, ct).ConfigureAwait(false);
-        var errors = PasswordPolicy.Validate(password, rules, new PasswordContext(u.SamAccountName, u.DisplayName)).ToList();
-        if (errors.Count == 0 && password is not null && S.Passwords.BreachedCheck != BreachedCheckMode.Off)
+        var issues = PasswordPolicy.Check(password, rules, new PasswordContext(u.SamAccountName, u.DisplayName)).ToList();
+        if (issues.Count == 0 && password is not null && S.Passwords.BreachedCheck != BreachedCheckMode.Off)
         {
             var r = await _breach.CheckAsync(password, ct).ConfigureAwait(false);
-            if (r == BreachCheckResult.Breached) errors.Add(_t.Get("err.pwdBreached"));
-            if (r == BreachCheckResult.Unknown && S.Passwords.BlockWhenBreachCheckUnavailable) errors.Add(_t.Get("err.pwdBreachUnavailable"));
+            if (r == BreachCheckResult.Breached) issues.Add(new PasswordIssue("err.pwdBreached"));
+            if (r == BreachCheckResult.Unknown && S.Passwords.BlockWhenBreachCheckUnavailable) issues.Add(new PasswordIssue("err.pwdBreachUnavailable"));
         }
-        return errors;
+        return issues;
     }
+
+    public async Task<IReadOnlyList<string>> CheckPassword(DirectoryUser u, string? password, CancellationToken ct) =>
+        (await PasswordIssues(u, password, ct).ConfigureAwait(false)).Select(PwdText).ToList();
 
     /// <summary>
     /// Verifica dal vivo. Le regole del singolo utente (PSO) si usano solo per una sessione autenticata o per un flusso gia' verificato:
@@ -464,12 +516,12 @@ public sealed class PortalService
         else if (s.Authenticated) u = await _ad.FindUserBySidAsync(s.UserSid!, ct).ConfigureAwait(false);
         if (u is null)
         {
-            var errs = PasswordPolicy.Validate(password, new PasswordRules { MinLength = S.Passwords.MinLength, BannedWords = S.Passwords.BannedWords }, new PasswordContext(null, null));
-            return new { valid = errs.Count == 0, errors = errs, minLength = S.Passwords.MinLength };
+            var errs = PasswordPolicy.Check(password, new PasswordRules { MinLength = S.Passwords.MinLength, BannedWords = S.Passwords.BannedWords }, new PasswordContext(null, null));
+            return new { valid = errs.Count == 0, errors = errs.Select(PwdText).ToArray(), codes = errs.Select(x => x.Code).ToArray(), minLength = S.Passwords.MinLength };
         }
-        var e2 = await CheckPassword(u, password, ct).ConfigureAwait(false);
+        var e2 = await PasswordIssues(u, password, ct).ConfigureAwait(false);
         var rules = await _ad.GetPasswordRulesAsync(u, ct).ConfigureAwait(false);
-        return new { valid = e2.Count == 0, errors = e2, minLength = rules.MinLength };
+        return new { valid = e2.Count == 0, errors = e2.Select(PwdText).ToArray(), codes = e2.Select(x => x.Code).ToArray(), minLength = rules.MinLength };
     }
 
     public async Task ChangePassword(SessionData s, string? current, string? newPassword, string? ip, CancellationToken ct)
@@ -495,7 +547,8 @@ public sealed class PortalService
             };
         }
         s.StepUpUntil = null;
-        await Audit(AuditEventId.PasswordChanged, AuditOutcome.Success, u.SamAccountName, null, ip, "Password cambiata").ConfigureAwait(false);
+        var closed = _sessions.RevokeUser(u.Sid, s.Id);
+        await Audit(AuditEventId.PasswordChanged, AuditOutcome.Success, u.SamAccountName, null, ip, "Password cambiata" + (closed > 0 ? $" (chiuse {closed} altre sessioni)" : "")).ConfigureAwait(false);
         await Notify(u, e, "passwordChanged", ct).ConfigureAwait(false);
     }
 
@@ -647,6 +700,9 @@ public sealed class PortalService
         {
             var f = GetFlow(s, flowId);
             var m = f.Methods.FirstOrDefault(x => x.Id == f.CurrentMethodId) ?? throw Err(400, "err.chooseMethod");
+            // stesso soggetto per flussi reali e fittizi (nome digitato): il blocco non rivela se l'account esiste
+            var subject = f.UserName ?? f.UserSid ?? f.Id;
+            RequireVerificationAllowed(subject, f.UserName, ip);
             Limit("verify:" + (f.UserSid ?? f.UserName), S.RateLimits.PerUserPerHour * 3, TimeSpan.FromHours(1), f.UserName, ip);
             var ok = false;
             if (!f.Fake)
@@ -670,6 +726,7 @@ public sealed class PortalService
             if (!ok)
             {
                 f.Failures++;
+                RecordVerificationFailure(subject);
                 await Audit(AuditEventId.ResetVerificationFailed, AuditOutcome.Failure, f.UserName, null, ip, $"Verifica fallita ({Name(m.Method)}) durante {f.Purpose}").ConfigureAwait(false);
                 if (f.Failures >= S.Verification.CodeMaxAttempts)
                 {
@@ -708,7 +765,8 @@ public sealed class PortalService
             }
             await SaveEnrollment(u, e with { State = e.State with { LastResetAt = Now } }, ct).ConfigureAwait(false);
             _flows.TryRemove(f.Id, out _);
-            await Audit(AuditEventId.PasswordReset, AuditOutcome.Success, u.SamAccountName, null, ip, $"Password reimpostata con {f.Done} verifiche").ConfigureAwait(false);
+            var closed = _sessions.RevokeUser(u.Sid, s.Id);
+            await Audit(AuditEventId.PasswordReset, AuditOutcome.Success, u.SamAccountName, null, ip, $"Password reimpostata con {f.Done} verifiche" + (closed > 0 ? $" (chiuse {closed} sessioni)" : "")).ConfigureAwait(false);
             await Notify(u, e, "passwordReset", ct).ConfigureAwait(false);
         }
         else
