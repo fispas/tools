@@ -3,12 +3,18 @@
 let current = null;      // utente aperto nel dettaglio
 let perms = {};          // permessi dell'operatore (dal servizio)
 let cfg = null;          // configurazione in modifica
-let catalog = [];        // catalogo dei testi
+let catalog = [];        // catalogo dei testi (della lingua in modifica)
+let textLang = null;     // lingua dei testi in modifica
+let textLangs = [];      // lingue disponibili nel servizio
+let report = [];         // righe del report registrazioni
 let dirty = false;
 let setTab = 'general';
 
 document.addEventListener('DOMContentLoaded', async () => {
   await Api.loadUi();
+  // il pannello e' in italiano: messaggi del servizio nella lingua predefinita
+  const def = (Api.ui.languages || [])[0];
+  if (def && Api.ui.language !== def) { Api.lang = def; await Api.loadUi(); }
   applyBranding('Amministrazione');
   await Api.refresh();
   const s = await Api.windowsLogin('admin').catch(() => null);
@@ -19,6 +25,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   $$('#main-tabs button').forEach(b => b.addEventListener('click', () => tab(b.dataset.tab)));
   $('#f-search').addEventListener('submit', search);
   $('#f-audit').addEventListener('submit', (e) => { e.preventDefault(); loadAudit(); });
+  $('#f-report').addEventListener('submit', (e) => e.preventDefault());
+  $('#r-q').addEventListener('input', drawReport);
+  $('#r-st').addEventListener('change', drawReport);
+  $$('#t-reports th[data-k]').forEach(th => th.addEventListener('click', () => sortReport(th.dataset.k)));
   $('#btn-save').addEventListener('click', saveSettings);
   $('#btn-reload').addEventListener('click', () => { if (!dirty || confirm('Annullare le modifiche non salvate?')) loadSettings(); });
   window.addEventListener('beforeunload', (e) => { if (dirty) { e.preventDefault(); e.returnValue = ''; } });
@@ -66,6 +76,7 @@ function tab(id) {
   if (id === 't-dash') loadDash();
   if (id === 't-audit') loadAudit();
   if (id === 't-health') loadHealth();
+  if (id === 't-reports') loadReport();
   if (id === 't-settings') loadSettings();
 }
 
@@ -145,6 +156,45 @@ async function tempReset(ev) {
   box.append(el('code', { class: 'key' }, r.temporaryPassword));
 }
 
+// ------------------------------------------------------------------ report registrazioni
+let reportSort = { k: 'userName', dir: 1 };
+async function loadReport() {
+  $('#r-rows').replaceChildren(el('tr', null, el('td', { colspan: '6', class: 'muted' }, 'Lettura della directory in corso...')));
+  const rows = await adm(null, '#t-reports .card', () => Api.get('/admin/reports/enrollment'));
+  if (!rows) { $('#r-rows').replaceChildren(); return; }
+  report = rows;
+  const enrolled = rows.filter(r => r.enrolled).length;
+  const soon = rows.filter(r => expiresWithin(r, 14)).length;
+  const pct = rows.length ? Math.round(enrolled * 100 / rows.length) : 0;
+  const k = (v, l, tone) => el('div', { class: 'kpi' + (tone ? ' ' + tone : '') }, el('b', null, v), l);
+  $('#r-kpis').replaceChildren(k(rows.length, 'Utenti nelle OU abilitate'), k(`${enrolled} (${pct}%)`, 'Registrati', pct >= 80 ? 'ok' : 'warn'),
+    k(rows.length - enrolled, 'Da registrare', rows.length - enrolled ? 'warn' : 'ok'), k(soon, 'Password in scadenza entro 14 giorni', soon ? 'warn' : 'ok'));
+  drawReport();
+}
+function expiresWithin(r, days) {
+  if (!r.passwordExpires) return false;
+  const t = new Date(r.passwordExpires).getTime() - Date.now();
+  return t > 0 && t < days * 86400000;
+}
+function sortReport(k) {
+  reportSort = { k, dir: reportSort.k === k ? -reportSort.dir : 1 };
+  $$('#t-reports th[data-k]').forEach(th => th.dataset.sort = th.dataset.k === k ? (reportSort.dir > 0 ? 'asc' : 'desc') : '');
+  drawReport();
+}
+function drawReport() {
+  const term = $('#r-q').value.toLowerCase(), st = $('#r-st').value;
+  const rows = report.filter(r => (!term || [r.userName, r.displayName, r.mail].some(x => (x || '').toLowerCase().includes(term)))
+    && (!st || (st === 'yes' && r.enrolled) || (st === 'no' && !r.enrolled) || (st === 'exp' && expiresWithin(r, 14))));
+  const { k, dir } = reportSort;
+  rows.sort((a, b) => { const x = a[k] ?? '', y = b[k] ?? ''; return (x > y ? 1 : x < y ? -1 : 0) * dir; });
+  $('#r-rows').replaceChildren(...rows.slice(0, 1000).map(r => el('tr', null,
+    el('td', null, r.userName), el('td', null, r.displayName || ''), el('td', null, r.mail || ''),
+    el('td', null, r.enrolled ? el('span', { class: 'badge ok' }, 'registrato') : el('span', { class: 'badge warn' }, 'non registrato')),
+    el('td', null, r.methods || ''),
+    el('td', null, r.passwordExpires ? el('span', { class: expiresWithin(r, 14) ? 'badge warn' : '' }, fmt(r.passwordExpires)) : el('span', { class: 'muted' }, 'non scade')))));
+  $('#r-count').textContent = rows.length > 1000 ? `Mostrati 1000 di ${rows.length}: usare il filtro o l'esportazione CSV.` : `${rows.length} utenti.`;
+}
+
 // ------------------------------------------------------------------ audit e stato
 function auditQuery() {
   const p = new URLSearchParams();
@@ -189,6 +239,9 @@ const SECTIONS = [
       text('general.helpdeskContact', 'Contatto help desk', 'Telefono, email o interno mostrati agli utenti ({helpdesk}).'),
       text('branding.helpUrl', 'Collegamento alla guida', 'URL di una guida interna, mostrato nel piè di pagina.'),
       text('general.defaultCountryCode', 'Prefisso internazionale predefinito', 'Per i numeri inseriti senza prefisso (es. 39).'),
+    ] },
+    { title: 'Lingue', fields: [
+      { path: 'general.languages', type: 'list', label: 'Lingue del portale', help: "Codici di due lettere, uno per riga; il primo e' quello predefinito. Disponibili: it, en. Con piu' lingue il portale mostra il selettore e usa la lingua del browser." },
     ] },
     { title: 'Avviso in evidenza', fields: [
       bool('branding.announcement.enabled', 'Mostra un avviso in tutte le pagine del portale'),
@@ -267,6 +320,19 @@ const SECTIONS = [
     ] },
   ] },
   { id: 'channels', title: 'Email e SMS', custom: renderChannels },
+  { id: 'jobs', title: 'Scadenze e campagne', custom: renderJobs },
+  { id: 'integrations', title: 'Integrazioni', groups: [
+    { title: 'Syslog / SIEM', fields: [
+      bool('audit.syslogEnabled', "Inoltra ogni evento dell'audit a un server syslog", 'Formato RFC 5424, facility authpriv. Utile per SIEM (Wazuh, Graylog, Splunk, Sentinel via agent).'),
+      text('audit.syslogHost', 'Server syslog', 'Nome o indirizzo, es. siem.contoso.local'),
+      int('audit.syslogPort', 'Porta', '514 di norma.', 1, 65535),
+      { path: 'audit.syslogProtocol', type: 'select', label: 'Protocollo', options: [['Udp', 'UDP'], ['Tcp', 'TCP (octet counting)']] },
+    ] },
+    { title: 'Webhook (Teams, Slack, chat)', fields: [
+      text('audit.webhookUrl', 'URL del webhook', 'Riceve un POST JSON {"text": "..."}. Vuoto = disattivato. Preferire https.'),
+      bool('audit.webhookOnlyIssues', 'Solo eventi rilevanti', 'Fallimenti, blocchi e operazioni del pannello; altrimenti tutti gli eventi.'),
+    ] },
+  ] },
   { id: 'directory', title: 'Directory', groups: [
     { title: 'Active Directory', fields: [
       text('directory.domainController', 'Domain controller', 'Vuoto = individuato automaticamente.'),
@@ -314,6 +380,10 @@ function field(def) {
       input = el('textarea', { id, class: 'small', spellcheck: 'false', oninput: (e) => setPath(cfg, def.path, e.target.value.split('\n').map(x => x.trim()).filter(Boolean)) });
       input.value = (v || []).join('\n');
       break;
+    case 'intlist':
+      input = el('textarea', { id, class: 'small', spellcheck: 'false', oninput: (e) => setPath(cfg, def.path, e.target.value.split(/[\s,;]+/).map(x => parseInt(x, 10)).filter(x => !isNaN(x))) });
+      input.value = (v || []).join('\n');
+      break;
     case 'color': {
       const txt = el('input', { id, maxlength: '7', oninput: (e) => { if (/^#[0-9a-f]{6}$/i.test(e.target.value)) { pick.value = e.target.value; setPath(cfg, def.path, e.target.value); } } });
       const pick = el('input', { type: 'color', oninput: (e) => { txt.value = e.target.value; setPath(cfg, def.path, e.target.value); } });
@@ -338,9 +408,9 @@ function renderGroups(groups) {
 
 async function loadSettings() {
   const s = await adm(null, '#t-settings .card', () => Api.get('/admin/settings'));
-  const t = await adm(null, '#t-settings .card', () => Api.get('/admin/texts'));
+  const t = await adm(null, '#t-settings .card', () => Api.get('/admin/texts' + (textLang ? '?lang=' + encodeURIComponent(textLang) : '')));
   if (!s || !t) return;
-  cfg = s; catalog = t;
+  cfg = s; catalog = t.items; textLang = t.language; textLangs = t.supported;
   cfg.branding.texts = cfg.branding.texts || {};
   secrets.smtp = null; secrets.sms = null;
   dirty = false; $('#dirty').textContent = '';
@@ -427,12 +497,14 @@ async function refreshAfterAsset() {
 }
 
 // ------------------------------------------------------------------ testi e notifiche (catalogo)
+// le personalizzazioni si salvano in branding.texts con la chiave della lingua (storeKey: "chiave" o "en:chiave")
 function textEditor(item, rows) {
-  const custom = cfg.branding.texts[item.key];
+  const sk = item.storeKey;
+  const custom = cfg.branding.texts[sk];
   const area = el('textarea', { class: 'small', rows: String(rows || 2), placeholder: item.defaultText,
-    oninput: (e) => { const v = e.target.value; if (v && v !== item.defaultText) cfg.branding.texts[item.key] = v; else delete cfg.branding.texts[item.key]; box.classList.toggle('custom', !!cfg.branding.texts[item.key]); markDirty(); } });
+    oninput: (e) => { const v = e.target.value; if (v && v !== item.defaultText) cfg.branding.texts[sk] = v; else delete cfg.branding.texts[sk]; box.classList.toggle('custom', !!cfg.branding.texts[sk]); markDirty(); } });
   area.value = custom || '';
-  const reset = el('button', { class: 'btn secondary small', onclick: () => { delete cfg.branding.texts[item.key]; area.value = ''; box.classList.remove('custom'); markDirty(); } }, 'Predefinito');
+  const reset = el('button', { class: 'btn secondary small', onclick: () => { delete cfg.branding.texts[sk]; area.value = ''; box.classList.remove('custom'); markDirty(); } }, 'Predefinito');
   const box = el('div', { class: 'text-row' + (custom ? ' custom' : '') },
     el('div', { class: 'row' }, el('div', null, el('div', { class: 'key' }, item.key), item.description ? el('div', { class: 'help' }, item.description) : null), reset),
     el('div', { class: 'help' }, 'Predefinito: ' + item.defaultText), area);
@@ -448,14 +520,14 @@ function renderTexts() {
   const draw = () => {
     const term = q.value.toLowerCase();
     const items = catalog.filter(x => !x.key.startsWith('notify.') && (!g.value || x.group === g.value)
-      && (!onlyCustom.checked || cfg.branding.texts[x.key])
-      && (!term || x.key.toLowerCase().includes(term) || x.defaultText.toLowerCase().includes(term) || (cfg.branding.texts[x.key] || '').toLowerCase().includes(term)));
+      && (!onlyCustom.checked || cfg.branding.texts[x.storeKey])
+      && (!term || x.key.toLowerCase().includes(term) || x.defaultText.toLowerCase().includes(term) || (cfg.branding.texts[x.storeKey] || '').toLowerCase().includes(term)));
     list.replaceChildren(...items.slice(0, 200).map(x => textEditor(x)));
     if (!items.length) list.append(el('p', { class: 'muted' }, 'Nessun testo.'));
   };
   q.addEventListener('input', draw); g.addEventListener('change', draw); onlyCustom.addEventListener('change', draw);
   draw();
-  return [el('p', { class: 'muted' }, 'Ogni testo del portale e dei messaggi di errore si può riscrivere. Lasciare vuoto per usare il predefinito. Segnaposto disponibili ovunque: {company}, {helpdesk}, {portalUrl}; gli altri sono indicati sotto la chiave. Solo testo semplice, niente HTML.'),
+  return [langPicker(), el('p', { class: 'muted' }, 'Ogni testo del portale e dei messaggi di errore si può riscrivere. Lasciare vuoto per usare il predefinito. Segnaposto disponibili ovunque: {company}, {helpdesk}, {portalUrl}; gli altri sono indicati sotto la chiave. Solo testo semplice, niente HTML.'),
     el('div', { class: 'row' }, el('div', null, q), el('div', null, g), el('div', { class: 'field check' }, el('label', { for: 'only-custom' }, onlyCustom, 'Solo personalizzati'))), list];
 }
 
@@ -463,9 +535,10 @@ function renderNotifications() {
   const events = [['code', 'Codice di verifica', null], ['methodAdded', 'Metodo aggiunto', 'methodAdded'], ['methodRemoved', 'Metodo rimosso', 'methodRemoved'],
     ['passwordChanged', 'Password cambiata', 'passwordChanged'], ['passwordReset', 'Password reimpostata', 'passwordReset'], ['accountUnlocked', 'Account sbloccato', 'accountUnlocked'],
     ['adminUnlock', "Sblocco dall'help desk", 'adminUnlock'], ['adminClearEnrollment', "Metodi azzerati dall'help desk", 'adminClearEnrollment'],
-    ['adminTemporaryReset', 'Password temporanea dal pannello', 'adminTemporaryReset'], ['invite', 'Invito a registrarsi', null]];
+    ['adminTemporaryReset', 'Password temporanea dal pannello', 'adminTemporaryReset'], ['invite', 'Invito a registrarsi (anche campagna)', null],
+    ['expiry', 'Avviso di scadenza della password', null]];
   const byKey = Object.fromEntries(catalog.map(x => [x.key, x]));
-  const out = [
+  const out = [langPicker(),
     el('div', { class: 'sub' }, el('h3', null, 'Canali delle notifiche'), el('div', { class: 'grid2' },
       field(bool('notifications.viaPersonalEmail', 'Email personale registrata')),
       field(bool('notifications.viaSms', 'SMS al cellulare registrato')),
@@ -475,12 +548,27 @@ function renderNotifications() {
   for (const [key, title, flag] of events) {
     const parts = ['subject', 'body', 'sms'].map(p => byKey[`notify.${key}.${p}`]).filter(Boolean);
     out.push(el('div', { class: 'sub' }, el('h3', null, title),
-      flag ? field(bool('notifications.' + flag, 'Invia questa notifica')) : el('p', { class: 'muted' }, key === 'code' ? 'Sempre inviato quando serve un codice.' : "Inviato quando l'operatore lo richiede."),
+      flag ? field(bool('notifications.' + flag, 'Invia questa notifica')) : el('p', { class: 'muted' }, key === 'code' ? 'Sempre inviato quando serve un codice.' : key === 'expiry' ? "Si attiva in Scadenze e campagne. Segnaposto {days} e {expiry}." : "Inviato dall'operatore o dalla campagna di registrazione."),
       parts.map(p => textEditor(p, p.key.endsWith('.body') ? 5 : 2))));
   }
   const purposes = catalog.filter(x => x.key.startsWith('notify.purpose.'));
   out.push(el('div', { class: 'sub' }, el('h3', null, 'Scopo del codice ({purpose})'), purposes.map(p => textEditor(p))));
   return out;
+}
+
+// selettore della lingua dei testi: ricarica predefiniti e chiavi di quella lingua, senza perdere le modifiche
+function langPicker() {
+  if (!textLangs || textLangs.length < 2) return el('span');
+  const names = { it: 'Italiano', en: 'English', de: 'Deutsch', fr: 'Francais', es: 'Espanol' };
+  const sel = el('select', { id: 'text-lang', onchange: async (e) => {
+    const t = await adm(null, '#t-settings .card', () => Api.get('/admin/texts?lang=' + encodeURIComponent(e.target.value)));
+    if (!t) return;
+    catalog = t.items; textLang = t.language; renderSection();
+  } }, textLangs.map(l => el('option', { value: l }, (names[l] || l) + ' (' + l + ')')));
+  sel.value = textLang;
+  const active = (cfg.general.languages || []).includes(textLang);
+  return el('div', { class: 'row langbar' }, el('div', { class: 'field' }, el('label', { for: 'text-lang' }, 'Lingua dei testi in modifica'), sel),
+    el('p', { class: 'muted' }, active ? 'Lingua attiva nel portale.' : 'Lingua non attiva: aggiungerla in Generale > Lingue per mostrarla agli utenti.'));
 }
 
 // ------------------------------------------------------------------ email e SMS
@@ -513,6 +601,34 @@ function renderChannels() {
       { path: 'sms.genericBodyTemplate', type: 'code', label: 'Corpo JSON (solo HTTP generico)', help: 'Segnaposto {to} e {text}, es. {"to":"{to}","text":"{text}"}' },
     ] }]),
     test('sms', 'Cellulare di prova (+39...)', 'tel'),
+  ];
+}
+
+// ------------------------------------------------------------------ attivita' pianificate
+function renderJobs() {
+  const run = (job, label) => el('button', { class: 'btn secondary small', onclick: async (e) => {
+    if (dirty) { message('#t-settings .card', 'info', "Salvare prima la configurazione: l'esecuzione usa le impostazioni salvate."); return; }
+    if (!confirm(`Eseguire adesso "${label}"? I messaggi vengono inviati davvero.`)) return;
+    const r = await adm(e.target, '#t-settings .card', () => Api.post('/admin/jobs/' + job + '/run'));
+    if (r) message('#t-settings .card', r.failed ? 'err' : 'ok', `${r.message} Controllati: ${r.checked}, inviati: ${r.sent}, errori: ${r.failed}.`);
+  } }, 'Esegui ora');
+  return [
+    el('p', { class: 'muted' }, "Attivita' eseguite dal servizio una volta al giorno all'ora indicata. Ogni invio finisce nell'audit (eventi 1700-1702). I testi si modificano in Notifiche."),
+    ...renderGroups([{ title: 'Avviso di scadenza della password', fields: [
+      bool('expiry.enabled', 'Avvisa gli utenti prima della scadenza della password', 'Usa msDS-UserPasswordExpiryTimeComputed: rispetta criteri di dominio e PSO.'),
+      { path: 'expiry.daysBefore', type: 'intlist', label: 'Giorni di preavviso', help: 'Uno per riga, es. 14, 7, 3, 1: un avviso per ogni soglia, mai due volte la stessa.' },
+      int('expiry.hourOfDay', 'Ora di invio (0-23)', '', 0, 23),
+      bool('expiry.toCorporateEmail', "All'email aziendale (attributo mail)"),
+      bool('expiry.toRegisteredMethods', "Anche all'email personale e al cellulare registrati", 'Utile per chi lavora da remoto e non legge la posta aziendale.'),
+    ] }]),
+    el('div', { class: 'row' }, run('expiry', 'Avviso di scadenza')),
+    ...renderGroups([{ title: 'Campagna di registrazione', fields: [
+      bool('campaign.enabled', 'Invita periodicamente chi non ha ancora registrato i metodi', "All'email aziendale, con l'indirizzo del portale."),
+      int('campaign.intervalDays', 'Ogni quanti giorni ripetere l\'invito allo stesso utente', '', 1, 365),
+      int('campaign.maxPerRun', 'Inviti massimi per esecuzione', 'Per non sovraccaricare il server di posta.', 1, 5000),
+      int('campaign.hourOfDay', 'Ora di invio (0-23)', '', 0, 23),
+    ] }]),
+    el('div', { class: 'row' }, run('campaign', 'Campagna di registrazione')),
   ];
 }
 

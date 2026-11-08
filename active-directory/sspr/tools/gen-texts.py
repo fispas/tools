@@ -1,5 +1,5 @@
 # Genera src/FispaSspr.Web/Texts/texts.it.json (catalogo dei testi predefiniti, JSON ASCII con escape \u).
-# Uso: python tools/gen-texts.py src/FispaSspr.Web/Texts/texts.it.json
+# Uso: python tools/gen-texts.py src/FispaSspr.Web/Texts   (scrive texts.it.json e texts.en.json)
 import json, sys
 G = {}
 def g(group, items):
@@ -16,6 +16,7 @@ g("Generale", [
  ("ui.back", "Indietro"), ("ui.cancel", "Annulla"), ("ui.confirm", "Conferma"), ("ui.continue", "Continua"),
  ("ui.home", "Torna all'inizio"), ("ui.logout", "Esci"),
  ("ui.helpdeskDefault", "help desk aziendale", "Usato se il contatto help desk non è impostato"),
+ ("ui.language", "Lingua", "Etichetta del selettore della lingua"),
 ])
 g("Home", [
  ("home.title", "Cosa vuoi fare?"),
@@ -157,10 +158,116 @@ g("Notifiche", [
  ("notify.adminTemporaryReset.subject", "Password reimpostata dall'help desk - {company}"),
  ("notify.adminTemporaryReset.body", "Ciao {displayName},\nl'help desk ha impostato una password temporanea sul tuo account {user}: dovrai cambiarla al primo accesso." + warn + sig),
  ("notify.adminTemporaryReset.sms", "{company}: password temporanea impostata dall'help desk sull'account {user}." + warn),
+ ("notify.expiry.subject", "La tua password scade tra {days} giorni - {company}", "Segnaposto: {days}, {expiry}, {user}, {displayName}"),
+ ("notify.expiry.body", "Ciao {displayName},\nla password del tuo account {user} scade il {expiry} (tra {days} giorni).\nCambiala ora da {portalUrl}: dal PC aziendale bastano pochi secondi.\nSe non l'hai ancora fatto, registra anche i metodi di verifica: ti serviranno se dimentichi la password." + sig),
+ ("notify.expiry.sms", "{company}: la password dell'account {user} scade tra {days} giorni. Cambiala su {portalUrl}."),
  ("notify.invite.subject", "Registrati al portale password - {company}"),
  ("notify.invite.body", "Ciao {displayName},\nregistra i tuoi metodi di verifica su {portalUrl}: ti serviranno per reimpostare la password o sbloccare l'account in autonomia, senza chiamare l'help desk.\nL'operazione richiede pochi minuti dal PC aziendale." + sig),
 ])
+sigE = "\n\n{company}"
+warnE = " If this wasn't you, contact the help desk immediately ({helpdesk})."
+EN = {
+ "ui.pageTitle": "Password and account", "ui.headerTitle": "Password portal", "ui.footer": "Need help? {helpdesk}", "ui.helpLink": "Guide",
+ "ui.wait": "Please wait...", "ui.back": "Back", "ui.cancel": "Cancel", "ui.confirm": "Confirm", "ui.continue": "Continue", "ui.home": "Back to start", "ui.logout": "Sign out",
+ "ui.helpdeskDefault": "your IT help desk", "ui.language": "Language",
+ "home.title": "What would you like to do?", "home.subtitle": "Manage the password of your work account on your own.",
+ "home.reset.title": "I forgot my password", "home.reset.text": "Reset it by verifying your identity",
+ "home.unlock.title": "My account is locked", "home.unlock.text": "Unlock it after too many failed attempts",
+ "home.account.title": "Change password and methods", "home.account.text": "You know your password: change it or register your verification methods",
+ "login.title": "Sign in", "login.subtitle": "On a company PC you can sign in directly with your Windows account.", "login.windows": "Use my Windows account",
+ "login.user": "User name", "login.password": "Current password", "login.submit": "Sign in",
+ "login.windowsUnavailable": "Windows sign-in is not available on this PC: use your user name and password.", "login.windowsOnly": "Sign in from a company PC with your Windows account.",
+ "account.notManageable.title": "Account not managed by the portal",
+ "account.notManageable.text": "For security reasons this account (administrative, service or out of scope) cannot use the portal. Please contact the help desk.",
+ "method.totp": "Authenticator app", "method.sms": "Text message", "method.email": "Personal email",
+ "enroll.title": "Verification methods", "enroll.enrolled": "You have {count} methods registered. You can use them to reset your password or unlock your account.",
+ "enroll.notEnrolled": "Register at least {min} methods: you will need them to reset your password or unlock your account without calling the help desk.",
+ "enroll.none": "No methods registered.", "enroll.add": "Add: {method}", "enroll.replace": "Replace: {method}", "enroll.remove": "Remove",
+ "enroll.removeConfirm": "Remove the method \"{method}\"?", "enroll.removed": "Method removed.", "enroll.added": "Method registered.", "enroll.totpAdded": "Authenticator app registered.",
+ "enroll.disabled": "Verification methods are managed by the help desk.",
+ "totp.title": "Authenticator app", "totp.text": "Open the app (Microsoft Authenticator, Google Authenticator or similar), add an account and scan the QR code.",
+ "totp.manual": "If you cannot scan it, enter this key:", "totp.code": "Code shown by the app",
+ "dest.sms.title": "Mobile phone for text messages", "dest.sms.label": "Mobile number (e.g. +44 7700 900123)",
+ "dest.email.title": "Personal email", "dest.email.label": "Personal email address (not your work one)", "dest.send": "Send the code",
+ "dest.sent": "We sent a code to {destination}.", "dest.code": "Code received",
+ "stepup.title": "Confirm your identity", "stepup.text": "For security reasons, confirm with one of your registered methods.", "stepup.method": "Confirm with",
+ "stepup.send": "Send the code", "stepup.code": "Verification code", "stepup.sent": "Code sent to {destination}.", "stepup.totpHint": "Enter the code shown by your authenticator app.",
+ "stepup.done": "Identity confirmed: repeat the operation.",
+ "change.title": "Change password", "change.current": "Current password", "change.new": "New password", "change.repeat": "Repeat the new password", "change.submit": "Change password",
+ "change.mismatch": "The two passwords do not match.", "change.done.title": "Password changed",
+ "change.done.text": "Use the new password right away. On your other devices (phone, mail) update it when asked.",
+ "pwd.minLength": "At least {min} characters", "pwd.valid": "Valid password",
+ "start.reset.title": "Reset your password", "start.unlock.title": "Unlock your account", "start.user": "User name (e.g. john.smith or john.smith@company.com)",
+ "flow.title": "Verify your identity", "flow.progress": "Verifications completed: {done} of {required}. Choose how to receive the code.",
+ "flow.use": "Use", "flow.send": "Send code", "flow.verified": "verified", "flow.code": "Code", "flow.verify": "Verify",
+ "flow.sent": "Code sent to {destination}. If it does not arrive within a few minutes, choose another method.", "flow.totpHint": "Enter the code shown by your authenticator app.",
+ "flow.noCode": "If you do not receive any code, your account may not be registered with the portal: contact the help desk {helpdesk}.",
+ "flow.next": "Verification successful. Complete the next one.",
+ "newpwd.title": "New password", "newpwd.submit": "Set the password",
+ "unlock.title": "Unlock your account", "unlock.text": "Verification completed. Confirm to unlock your account.", "unlock.submit": "Unlock",
+ "done.reset.title": "Password reset", "done.reset.text": "You can now sign in with your new password. Update it on your phone and mail when asked.",
+ "done.unlock.title": "Account unlocked", "done.unlock.text": "You can now sign in again with your password.",
+ "err.sessionExpired": "Session expired: reload the page.", "err.rateLimit": "Too many attempts. Please try again later.", "err.rateLimitWait": "(wait about {minutes} minutes)",
+ "err.loginFailed": "Invalid user name or password.", "err.loginRequired": "Sign-in required.", "err.notManageable": "This account cannot use the portal: contact the help desk.",
+ "err.disabled": "The account is disabled.", "err.featureDisabled": "Feature not available.", "err.windowsRequired": "For this operation sign in from a company PC with your Windows account.",
+ "err.stepUpRequired": "First confirm your identity with a registered method.", "err.methodUnavailable": "Method not available.", "err.methodInvalid": "Invalid method.",
+ "err.phoneInvalid": "Invalid mobile number.", "err.emailInvalid": "Invalid email address.", "err.emailCorporate": "Enter a personal email address, different from your work one.",
+ "err.codeInvalid": "Invalid code.", "err.codeExpired": "Code expired or too many attempts: request a new one.", "err.codeRequestNew": "Request a new code.",
+ "err.totpInvalid": "Invalid code: check the time on your phone and try again.", "err.totpStartFirst": "Start the app setup first.",
+ "err.minMethods": "At least {min} methods are required: add another one before removing this one.", "err.removalDisabled": "Removing methods is not allowed: contact the help desk.",
+ "err.sendFailed": "Could not send the code. Try again or use another method.", "err.fieldsRequired": "Fill in all fields.",
+ "err.pwdRequirements": "The new password does not meet the requirements.", "err.pwdBreached": "This password appears in lists of stolen passwords: choose another one.",
+ "err.pwdBreachUnavailable": "The breached-password check is not available: try again later.", "err.wrongCurrent": "The current password is not correct.",
+ "err.adRejectedChange": "Active Directory rejected the password: it may have been used recently or changed too recently.",
+ "err.accountLocked": "The account is locked: use the unlock feature.", "err.changeFailed": "Password change failed. Try again or contact the help desk.",
+ "err.flowExpired": "Session expired: start again.", "err.operationInvalid": "Invalid operation.", "err.userRequired": "Enter your user name.",
+ "err.chooseMethod": "Choose a method first.", "err.tooManyCodes": "Too many wrong codes: start again.", "err.notVerified": "Identity verification not completed.",
+ "err.notAllowed": "Operation not allowed.", "err.adRejectedReset": "Active Directory rejected the password (history or requirements): choose another one.",
+ "err.resetFailed": "Reset failed. Contact the help desk.", "err.unlockFailed": "Unlock failed. Contact the help desk.",
+ "err.unexpected": "Unexpected error. Try again or contact the help desk.", "err.busy": "Service temporarily busy: try again shortly.",
+ "notify.purpose.enroll": "registration", "notify.purpose.change": "the password change", "notify.purpose.reset": "the password reset",
+ "notify.purpose.unlock": "the account unlock", "notify.purpose.stepup": "identity confirmation",
+ "notify.code.subject": "Verification code - {company}",
+ "notify.code.body": "Your code for {purpose} is {code}.\nIt is valid for {minutes} minutes. Do not share it with anyone: the help desk will never ask for it." + sigE,
+ "notify.code.sms": "{company}: code {code} for {purpose}, valid {minutes} min. Do not share it.",
+ "notify.methodAdded.subject": "Verification method added - {company}",
+ "notify.methodAdded.body": "Hello {displayName},\na new verification method was registered on your account {user}: {method}." + warnE + sigE,
+ "notify.methodAdded.sms": "{company}: method {method} added to your account." + warnE,
+ "notify.methodRemoved.subject": "Verification method removed - {company}",
+ "notify.methodRemoved.body": "Hello {displayName},\nthe verification method {method} was removed from your account {user}." + warnE + sigE,
+ "notify.methodRemoved.sms": "{company}: method {method} removed from your account." + warnE,
+ "notify.passwordChanged.subject": "Password changed - {company}",
+ "notify.passwordChanged.body": "Hello {displayName},\nthe password of your account {user} was changed on {time}." + warnE + sigE,
+ "notify.passwordChanged.sms": "{company}: password of account {user} changed." + warnE,
+ "notify.passwordReset.subject": "Password reset - {company}",
+ "notify.passwordReset.body": "Hello {displayName},\nthe password of your account {user} was reset from the portal on {time}." + warnE + sigE,
+ "notify.passwordReset.sms": "{company}: password of account {user} reset." + warnE,
+ "notify.accountUnlocked.subject": "Account unlocked - {company}",
+ "notify.accountUnlocked.body": "Hello {displayName},\nyour account {user} was unlocked from the portal on {time}." + warnE + sigE,
+ "notify.accountUnlocked.sms": "{company}: account {user} unlocked." + warnE,
+ "notify.adminUnlock.subject": "Account unlocked by the help desk - {company}",
+ "notify.adminUnlock.body": "Hello {displayName},\nyour account {user} was unlocked by the help desk on {time}." + warnE + sigE,
+ "notify.adminUnlock.sms": "{company}: account {user} unlocked by the help desk." + warnE,
+ "notify.adminClearEnrollment.subject": "Verification methods cleared - {company}",
+ "notify.adminClearEnrollment.body": "Hello {displayName},\nthe help desk cleared the verification methods of your account {user}: register them again at {portalUrl}." + warnE + sigE,
+ "notify.adminClearEnrollment.sms": "{company}: verification methods of account {user} cleared by the help desk." + warnE,
+ "notify.adminTemporaryReset.subject": "Password reset by the help desk - {company}",
+ "notify.adminTemporaryReset.body": "Hello {displayName},\nthe help desk set a temporary password on your account {user}: you will have to change it at the next sign-in." + warnE + sigE,
+ "notify.adminTemporaryReset.sms": "{company}: temporary password set by the help desk on account {user}." + warnE,
+ "notify.expiry.subject": "Your password expires in {days} days - {company}",
+ "notify.expiry.body": "Hello {displayName},\nthe password of your account {user} expires on {expiry} (in {days} days).\nChange it now at {portalUrl}: from a company PC it only takes a few seconds.\nIf you have not done it yet, also register your verification methods: you will need them if you forget your password." + sigE,
+ "notify.expiry.sms": "{company}: the password of account {user} expires in {days} days. Change it at {portalUrl}.",
+ "notify.invite.subject": "Register with the password portal - {company}",
+ "notify.invite.body": "Hello {displayName},\nregister your verification methods at {portalUrl}: you will need them to reset your password or unlock your account on your own, without calling the help desk.\nIt only takes a few minutes from a company PC." + sigE,
+}
+missing = [k for k in G if k not in EN]
+extra = [k for k in EN if k not in G]
+assert not missing and not extra, (missing, extra)
+import os
 out = sys.argv[1]
-with open(out, "w", encoding="ascii") as f:
+os.makedirs(out, exist_ok=True)
+with open(os.path.join(out, "texts.it.json"), "w", encoding="ascii") as f:
     json.dump(G, f, ensure_ascii=True, indent=1)
-print(len(G), "testi")
+with open(os.path.join(out, "texts.en.json"), "w", encoding="ascii") as f:
+    json.dump({k: {"g": G[k]["g"], "t": EN[k], "d": G[k]["d"]} for k in G}, f, ensure_ascii=True, indent=1)
+print(len(G), "testi, lingue it/en")

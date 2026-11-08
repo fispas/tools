@@ -75,9 +75,12 @@ public static class Endpoints
         var c = st.Current;
         var b = c.Branding;
         var f = c.Features;
+        var lang = t.Effective();
         return new
         {
-            texts = t.ForClient(),
+            language = lang,
+            languages = t.ActiveLanguages,
+            texts = t.ForClient(lang),
             branding = new
             {
                 companyName = c.General.CompanyName,
@@ -253,7 +256,26 @@ public static class Endpoints
             return Results.File(Encoding.UTF8.GetPreamble().Concat(Encoding.UTF8.GetBytes(sb.ToString())).ToArray(), "text/csv", "audit-sspr.csv");
         });
         adm.MapGet("/settings", (HttpContext c, AdminService a) => Results.Ok(a.GetSettings(Sess(c))));
-        adm.MapGet("/texts", (HttpContext c, AdminService a) => Results.Ok(a.TextCatalogDto(Sess(c))));
+        adm.MapGet("/texts", (HttpContext c, string? lang, AdminService a) => Results.Ok(a.TextCatalogDto(Sess(c), lang)));
+        adm.MapGet("/reports/enrollment", async (HttpContext c, string? format, AdminService a) =>
+        {
+            var rows = await a.EnrollmentReport(Sess(c), c.RequestAborted);
+            if (format != "csv") return Results.Ok(rows);
+            var sb = new StringBuilder("Utente;Nome;Email aziendale;Registrato;Metodi;Scadenza password\r\n");
+            foreach (var r in rows) sb.Append(string.Join(';', new[] { CsvCell(r.UserName), CsvCell(r.DisplayName), CsvCell(r.Mail), CsvCell(r.Enrolled ? "si" : "no"), CsvCell(r.Methods), CsvCell(r.PasswordExpires?.ToString("yyyy-MM-dd HH:mm", System.Globalization.CultureInfo.InvariantCulture)) })).Append("\r\n");
+            return Results.File(Encoding.UTF8.GetPreamble().Concat(Encoding.UTF8.GetBytes(sb.ToString())).ToArray(), "text/csv; charset=utf-8", "registrazioni.csv");
+        });
+        adm.MapPost("/jobs/{job}/run", async (HttpContext c, string job, AdminService a, Jobs jobs) =>
+        {
+            a.RequireOperator(Sess(c), adminOnly: true);
+            var r = job switch
+            {
+                "expiry" => await jobs.RunExpiryAsync(force: true, c.RequestAborted),
+                "campaign" => await jobs.RunCampaignAsync(force: true, c.RequestAborted),
+                _ => throw new PortalException(404, "Attivita' sconosciuta."),
+            };
+            return Results.Ok(r);
+        });
         adm.MapPost("/branding/{asset}", async (HttpContext c, string asset, AdminService.AssetUpload r, AdminService a) => { await a.UploadAsset(Sess(c), asset, r, Ip(c)); return Results.NoContent(); })
            .WithMetadata(new RequestSizeLimitAttribute(BrandingStore.MaxBytes * 2));
         adm.MapDelete("/branding/{asset}", async (HttpContext c, string asset, AdminService a) => { await a.DeleteAsset(Sess(c), asset, Ip(c)); return Results.NoContent(); });

@@ -14,6 +14,7 @@
 <header>
   <img id="logo" class="hidden" alt="">
   <span class="title"><span class="company"></span> - amministrazione</span>
+  <span class="spacer"></span>
   <span class="user" id="who"></span>
 </header>
 <main class="wide">
@@ -44,6 +45,7 @@
       <button data-tab="t-dash" class="active">Cruscotto</button>
       <button data-tab="t-users">Utenti</button>
       <button data-tab="t-audit">Audit</button>
+      <button data-tab="t-reports">Report</button>
       <button data-tab="t-health">Stato</button>
       <button data-tab="t-settings" class="admin-only">Configurazione</button>
     </nav>
@@ -79,6 +81,22 @@
           <div><button class="btn" type="submit">Filtra</button><a class="btn secondary" id="a-csv" href="#">Esporta CSV</a></div>
         </form>
         <table><thead><tr><th>Data</th><th>ID</th><th>Esito</th><th>Utente</th><th>Operatore</th><th>IP</th><th>Messaggio</th></tr></thead><tbody id="audit"></tbody></table>
+      </div>
+    </div>
+
+    <div id="t-reports" class="tab hidden">
+      <div class="card">
+        <div class="row between">
+          <div><h2>Registrazione e scadenze</h2><p class="muted">Utenti delle OU abilitate: stato della registrazione dei metodi e scadenza della password.</p></div>
+          <div><a class="btn secondary" id="r-csv" href="/api/v1/admin/reports/enrollment?format=csv">Esporta CSV</a></div>
+        </div>
+        <div class="kpis" id="r-kpis"></div>
+        <form id="f-report" class="row">
+          <div><label for="r-q">Filtra</label><input id="r-q" maxlength="100" placeholder="Nome, utente o email"></div>
+          <div><label for="r-st">Stato</label><select id="r-st"><option value="">Tutti</option><option value="no">Non registrati</option><option value="yes">Registrati</option><option value="exp">Password in scadenza (14 giorni)</option></select></div>
+        </form>
+        <table class="sortable"><thead><tr><th data-k="userName">Utente</th><th data-k="displayName">Nome</th><th data-k="mail">Email aziendale</th><th data-k="enrolled">Registrazione</th><th data-k="methods">Metodi</th><th data-k="passwordExpires">Scadenza password</th></tr></thead><tbody id="r-rows"></tbody></table>
+        <p class="muted" id="r-count"></p>
       </div>
     </div>
 

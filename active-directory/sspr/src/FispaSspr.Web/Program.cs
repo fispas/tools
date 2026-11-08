@@ -42,6 +42,8 @@ builder.Services.AddSingleton<IBreachedPasswordChecker, SettingsBreachChecker>()
 builder.Services.AddSingleton<PortalService>();
 builder.Services.AddSingleton<AdminService>();
 builder.Services.AddHttpClient("sms", c => c.Timeout = TimeSpan.FromSeconds(15));
+builder.Services.AddHttpClient("webhook", c => c.Timeout = TimeSpan.FromSeconds(10));
+builder.Services.AddSingleton<Jobs>();
 builder.Services.AddHttpClient("hibp", c => { c.Timeout = TimeSpan.FromSeconds(5); c.DefaultRequestHeaders.UserAgent.ParseAdd("FispaSSPR"); });
 builder.Services.ConfigureHttpJsonOptions(o => o.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
 builder.Services.AddAuthentication(NegotiateDefaults.AuthenticationScheme).AddNegotiate();
@@ -108,6 +110,20 @@ app.Use(async (ctx, next) =>
     }
 });
 
+// lingua della richiesta: intestazione X-Lang (impostata dall'interfaccia), parametro lang o Accept-Language
+app.Use(async (ctx, next) =>
+{
+    string? lang = ctx.Request.Headers["X-Lang"];
+    if (string.IsNullOrEmpty(lang)) lang = ctx.Request.Query["lang"];
+    if (string.IsNullOrEmpty(lang))
+    {
+        var al = ctx.Request.Headers.AcceptLanguage.ToString();
+        if (al.Length >= 2) lang = al[..2];
+    }
+    TextCatalog.Current = lang is { Length: >= 2 } && lang.Length <= 8 ? lang[..2].ToLowerInvariant() : null;
+    await next();
+});
+
 // CSRF: ogni richiesta che modifica qualcosa deve portare il token della sessione
 app.Use(async (ctx, next) =>
 {
@@ -146,6 +162,12 @@ app.Lifetime.ApplicationStarted.Register(() =>
             services.GetRequiredService<SessionStore>().Purge();
             services.GetRequiredService<PortalService>().PurgeFlows();
             services.GetRequiredService<SlidingWindowRateLimiter>().Purge(TimeSpan.FromHours(2));
+            try
+            {
+                TextCatalog.Current = null;
+                await services.GetRequiredService<Jobs>().TickAsync(app.Lifetime.ApplicationStopping).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException) { services.GetRequiredService<ILogger<Program>>().LogError(ex, "Attivita' pianificata non riuscita"); }
             if (tick++ % 1440 == 0)
             {
                 try { services.GetRequiredService<AuditLog>().PurgeOlderThan(settings.Current.Audit.RetentionMonths); }

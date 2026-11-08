@@ -2,24 +2,42 @@
 // Client dell'API FispaSSPR (contratto in api/openapi.yaml), testi e aspetto dal server. Nessuna dipendenza esterna.
 const Api = {
   session: null,
-  ui: { texts: {}, branding: {}, features: {} },
+  ui: { texts: {}, branding: {}, features: {}, languages: [] },
+  lang: null,             // lingua scelta (inviata in X-Lang); null = decide il server (Accept-Language)
 
   async loadUi() {
     try {
-      const r = await fetch('/api/v1/ui', { credentials: 'same-origin' });
+      const r = await fetch('/api/v1/ui' + (Api.lang ? '?lang=' + encodeURIComponent(Api.lang) : ''), { credentials: 'same-origin', headers: Api.langHeaders() });
       if (r.ok) Api.ui = await r.json();
     } catch (e) { /* testi predefiniti nell'HTML */ }
+    if (Api.ui.language) document.documentElement.lang = Api.ui.language;
     return Api.ui;
   },
 
+  langHeaders() { return Api.lang ? { 'X-Lang': Api.lang } : {}; },
+
+  // lingua: scelta salvata, poi quella del browser, purche' attiva nel portale
+  initLang() {
+    let saved = null;
+    try { saved = localStorage.getItem('sspr.lang'); } catch (e) { /* storage non disponibile */ }
+    if (saved && /^[a-z]{2}$/.test(saved)) Api.lang = saved;
+  },
+
+  async setLang(l) {
+    if (!/^[a-z]{2}$/.test(l)) return;
+    Api.lang = l;
+    try { localStorage.setItem('sspr.lang', l); } catch (e) { /* storage non disponibile */ }
+    await Api.loadUi();
+  },
+
   async refresh() {
-    const r = await fetch('/api/v1/session', { credentials: 'same-origin' });
+    const r = await fetch('/api/v1/session', { credentials: 'same-origin', headers: Api.langHeaders() });
     Api.session = await r.json();
     return Api.session;
   },
 
   async windowsLogin(panel) {
-    const r = await fetch('/api/v1/session/windows' + (panel ? '?panel=' + panel : ''), { credentials: 'include' });
+    const r = await fetch('/api/v1/session/windows' + (panel ? '?panel=' + panel : ''), { credentials: 'include', headers: Api.langHeaders() });
     if (!r.ok) return null;
     Api.session = await r.json();
     return Api.session;
@@ -27,7 +45,7 @@ const Api = {
 
   async call(method, url, body) {
     if (!Api.session) await Api.refresh();
-    const opt = { method, credentials: 'same-origin', headers: { 'X-CSRF-Token': Api.session.csrfToken } };
+    const opt = { method, credentials: 'same-origin', headers: Object.assign({ 'X-CSRF-Token': Api.session.csrfToken }, Api.langHeaders()) };
     if (body !== undefined) { opt.headers['Content-Type'] = 'application/json'; opt.body = JSON.stringify(body); }
     const r = await fetch('/api/v1' + url, opt);
     if (r.status === 204) return null;
@@ -129,6 +147,20 @@ async function guarded(button, container, fn) {
   try { return await fn(); }
   catch (e) { message(container, 'err', errorText(e), e.errors); return undefined; }
   finally { busy(button, false); }
+}
+
+// Selettore della lingua nell'intestazione (solo con piu' lingue attive)
+const LANG_NAMES = { it: 'Italiano', en: 'English', de: 'Deutsch', fr: 'Francais', es: 'Espanol' };
+function renderLangPicker(onChange) {
+  const host = $('#lang');
+  if (!host) return;
+  const langs = Api.ui.languages || [];
+  if (langs.length < 2) { host.replaceChildren(); host.classList.add('hidden'); return; }
+  const sel = el('select', { 'aria-label': T('ui.language'), onchange: async (e) => { await Api.setLang(e.target.value); if (onChange) onChange(); } },
+    langs.map(l => el('option', { value: l }, LANG_NAMES[l] || l.toUpperCase())));
+  sel.value = Api.ui.language || langs[0];
+  host.replaceChildren(sel);
+  host.classList.remove('hidden');
 }
 
 // Aspetto: titolo, logo, icona, avviso, piede pagina, collegamento alla guida

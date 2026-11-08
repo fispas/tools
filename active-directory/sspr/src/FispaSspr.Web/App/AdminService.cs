@@ -327,14 +327,39 @@ public sealed class AdminService
     }
 
     /// <summary>Catalogo dei testi con predefiniti, gruppi e descrizioni, per l'editor del pannello.</summary>
-    public object TextCatalogDto(SessionData s)
+    public object TextCatalogDto(SessionData s, string? lang)
     {
         RequireOperator(s, adminOnly: true);
-        return _texts.Defaults.Select(kv => new
+        var l = (lang ?? _texts.DefaultLanguage).ToLowerInvariant();
+        if (!_texts.SupportedLanguages.Contains(l)) l = _texts.DefaultLanguage;
+        return new
         {
-            key = kv.Key, group = kv.Value.Group, description = kv.Value.Description, defaultText = kv.Value.Text,
-            customText = S.Branding.Texts.TryGetValue(kv.Key, out var v) ? v : null,
-        }).ToArray();
+            language = l,
+            defaultLanguage = _texts.DefaultLanguage,
+            supported = _texts.SupportedLanguages,
+            items = _texts.Defaults.Select(kv => new
+            {
+                key = kv.Key, group = kv.Value.Group, description = kv.Value.Description, defaultText = _texts.DefaultText(kv.Key, l),
+                customText = _texts.Custom(kv.Key, l),
+                storeKey = l == TextCatalog.BaseLanguage ? kv.Key : l + ":" + kv.Key,
+            }).ToArray(),
+        };
+    }
+
+    public sealed record EnrollmentRow(string UserName, string? DisplayName, string? Mail, bool Enrolled, string Methods, DateTimeOffset? PasswordExpires);
+
+    /// <summary>Utenti dell'ambito con stato della registrazione e scadenza della password.</summary>
+    public async Task<IReadOnlyList<EnrollmentRow>> EnrollmentReport(SessionData s, CancellationToken ct)
+    {
+        RequireOperator(s);
+        var users = await _ad.EnumerateScopeAsync(ct).ConfigureAwait(false);
+        var codec = new EnrollmentCodec(_keys);
+        var min = S.Verification.MinimumEnrolledMethods;
+        return users.Select(u =>
+        {
+            var e = codec.Decode(u.Attributes, u.Sid, out _);
+            return new EnrollmentRow(u.SamAccountName, u.DisplayName, u.Mail, e.IsEnrolled(min), string.Join(", ", e.Methods.Select(PortalService.Name)), u.PasswordExpires);
+        }).OrderBy(r => r.Enrolled).ThenBy(r => r.UserName, StringComparer.OrdinalIgnoreCase).ToList();
     }
 
     public sealed record SettingsUpdate(SsprSettings Settings, string? SmtpPassword, string? SmsPassword);
@@ -345,6 +370,8 @@ public sealed class AdminService
         var cur = S;
         var n = update.Settings ?? throw new PortalException(400, "Configurazione mancante.");
         var errors = Validate(n);
+        foreach (var l in n.General?.Languages ?? Array.Empty<string>())
+            if (!_texts.SupportedLanguages.Contains(l)) errors.Add($"Lingua non disponibile: {l} (disponibili: {string.Join(", ", _texts.SupportedLanguages)}).");
         var texts = _texts.Sanitize(n.Branding?.Texts, errors);
         if (errors.Count > 0) throw new PortalException(400, "Configurazione non valida.", errors);
         var key = _keys.Current;
@@ -410,6 +437,14 @@ public sealed class AdminService
             e.Add("Durate delle sessioni fuori intervallo.");
         if (n.Admin.SessionMinutes is < 5 or > 480 || n.Admin.MaxSecondFactorFailuresPerHour is < 3 or > 20) e.Add("Impostazioni degli operatori fuori intervallo.");
         if (n.Audit.RetentionMonths is < 1 or > 120) e.Add("Conservazione dell'audit: da 1 a 120 mesi.");
+        if (n.Audit.SyslogEnabled && (string.IsNullOrWhiteSpace(n.Audit.SyslogHost) || !System.Text.RegularExpressions.Regex.IsMatch(n.Audit.SyslogHost, @"^[A-Za-z0-9.:\-]{1,255}$"))) e.Add("Server syslog non valido.");
+        if (n.Audit.SyslogPort is < 1 or > 65535 || n.Audit.SyslogProtocol is not ("Udp" or "Tcp")) e.Add("Porta o protocollo syslog non validi (Udp o Tcp).");
+        if (!IsUrl(n.Audit.WebhookUrl, httpsOnly: false)) e.Add("URL del webhook non valido.");
+        if (n.Expiry is null || n.Campaign is null) { e.Add("Sezioni Scadenze o Campagna mancanti."); return e; }
+        if (n.Expiry.DaysBefore.Count is < 1 or > 10 || n.Expiry.DaysBefore.Any(d => d is < 1 or > 90)) e.Add("Giorni di preavviso: da 1 a 10 valori tra 1 e 90.");
+        if (n.Expiry.HourOfDay is < 0 or > 23 || n.Campaign.HourOfDay is < 0 or > 23) e.Add("Ora delle attivita' pianificate: da 0 a 23.");
+        if (n.Campaign.IntervalDays is < 1 or > 365 || n.Campaign.MaxPerRun is < 1 or > 5000) e.Add("Campagna: intervallo da 1 a 365 giorni, massimo da 1 a 5000 inviti.");
+        if (n.General.Languages.Count is < 1 or > 5 || n.General.Languages.Any(l => l is null || !System.Text.RegularExpressions.Regex.IsMatch(l, "^[a-z]{2}$"))) e.Add("Lingue: da 1 a 5 codici di due lettere (es. it, en).");
         if (!n.Features.WindowsLoginEnabled && !n.Features.PasswordLoginEnabled && (n.Features.ChangeEnabled || n.Features.EnrollmentEnabled))
             e.Add("Con accesso Windows e accesso con password entrambi disattivati, cambio password e registrazione non sono utilizzabili.");
         return e;

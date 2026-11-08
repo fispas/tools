@@ -20,6 +20,9 @@
 | 1503 | Accesso al pannello negato | |
 | 1601 | Tentativo su un account protetto | Admin, gruppi privilegiati, Protected Users, account di servizio |
 | 1602 | Limite di tentativi raggiunto | Per utente, IP o globale |
+| 1700 | Avviso di scadenza della password inviato | Con soglia in giorni e canali |
+| 1701 | Invito della campagna di registrazione | Utente non ancora registrato |
+| 1702 | Esecuzione di un'attivita' pianificata | Avvisi o campagna: controllati, inviati, errori; anche *Esegui ora* dal pannello |
 | 1900 | Configurazione modificata | Con operatore; i segreti non vengono registrati |
 | 1901 | Aspetto modificato | Caricamento o rimozione di logo, icona, sfondo |
 | 1990 | Errore imprevisto | |

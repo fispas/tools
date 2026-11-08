@@ -1,0 +1,892 @@
+{
+ "ui.pageTitle": {
+  "g": "Generale",
+  "t": "Password and account",
+  "d": "Titolo della scheda del browser"
+ },
+ "ui.headerTitle": {
+  "g": "Generale",
+  "t": "Password portal",
+  "d": "Titolo nell'intestazione se il nome azienda non \u00e8 impostato"
+ },
+ "ui.footer": {
+  "g": "Generale",
+  "t": "Need help? {helpdesk}",
+  "d": "Pi\u00e8 di pagina. Segnaposto: {helpdesk}, {company}"
+ },
+ "ui.helpLink": {
+  "g": "Generale",
+  "t": "Guide",
+  "d": "Testo del collegamento alla guida (se configurato)"
+ },
+ "ui.wait": {
+  "g": "Generale",
+  "t": "Please wait...",
+  "d": ""
+ },
+ "ui.back": {
+  "g": "Generale",
+  "t": "Back",
+  "d": ""
+ },
+ "ui.cancel": {
+  "g": "Generale",
+  "t": "Cancel",
+  "d": ""
+ },
+ "ui.confirm": {
+  "g": "Generale",
+  "t": "Confirm",
+  "d": ""
+ },
+ "ui.continue": {
+  "g": "Generale",
+  "t": "Continue",
+  "d": ""
+ },
+ "ui.home": {
+  "g": "Generale",
+  "t": "Back to start",
+  "d": ""
+ },
+ "ui.logout": {
+  "g": "Generale",
+  "t": "Sign out",
+  "d": ""
+ },
+ "ui.helpdeskDefault": {
+  "g": "Generale",
+  "t": "your IT help desk",
+  "d": "Usato se il contatto help desk non \u00e8 impostato"
+ },
+ "ui.language": {
+  "g": "Generale",
+  "t": "Language",
+  "d": "Etichetta del selettore della lingua"
+ },
+ "home.title": {
+  "g": "Home",
+  "t": "What would you like to do?",
+  "d": ""
+ },
+ "home.subtitle": {
+  "g": "Home",
+  "t": "Manage the password of your work account on your own.",
+  "d": ""
+ },
+ "home.reset.title": {
+  "g": "Home",
+  "t": "I forgot my password",
+  "d": ""
+ },
+ "home.reset.text": {
+  "g": "Home",
+  "t": "Reset it by verifying your identity",
+  "d": ""
+ },
+ "home.unlock.title": {
+  "g": "Home",
+  "t": "My account is locked",
+  "d": ""
+ },
+ "home.unlock.text": {
+  "g": "Home",
+  "t": "Unlock it after too many failed attempts",
+  "d": ""
+ },
+ "home.account.title": {
+  "g": "Home",
+  "t": "Change password and methods",
+  "d": ""
+ },
+ "home.account.text": {
+  "g": "Home",
+  "t": "You know your password: change it or register your verification methods",
+  "d": ""
+ },
+ "login.title": {
+  "g": "Accesso",
+  "t": "Sign in",
+  "d": ""
+ },
+ "login.subtitle": {
+  "g": "Accesso",
+  "t": "On a company PC you can sign in directly with your Windows account.",
+  "d": ""
+ },
+ "login.windows": {
+  "g": "Accesso",
+  "t": "Use my Windows account",
+  "d": ""
+ },
+ "login.user": {
+  "g": "Accesso",
+  "t": "User name",
+  "d": ""
+ },
+ "login.password": {
+  "g": "Accesso",
+  "t": "Current password",
+  "d": ""
+ },
+ "login.submit": {
+  "g": "Accesso",
+  "t": "Sign in",
+  "d": ""
+ },
+ "login.windowsUnavailable": {
+  "g": "Accesso",
+  "t": "Windows sign-in is not available on this PC: use your user name and password.",
+  "d": ""
+ },
+ "login.windowsOnly": {
+  "g": "Accesso",
+  "t": "Sign in from a company PC with your Windows account.",
+  "d": ""
+ },
+ "account.notManageable.title": {
+  "g": "Accesso",
+  "t": "Account not managed by the portal",
+  "d": ""
+ },
+ "account.notManageable.text": {
+  "g": "Accesso",
+  "t": "For security reasons this account (administrative, service or out of scope) cannot use the portal. Please contact the help desk.",
+  "d": ""
+ },
+ "method.totp": {
+  "g": "Metodi di verifica",
+  "t": "Authenticator app",
+  "d": ""
+ },
+ "method.sms": {
+  "g": "Metodi di verifica",
+  "t": "Text message",
+  "d": ""
+ },
+ "method.email": {
+  "g": "Metodi di verifica",
+  "t": "Personal email",
+  "d": ""
+ },
+ "enroll.title": {
+  "g": "Metodi di verifica",
+  "t": "Verification methods",
+  "d": ""
+ },
+ "enroll.enrolled": {
+  "g": "Metodi di verifica",
+  "t": "You have {count} methods registered. You can use them to reset your password or unlock your account.",
+  "d": "{count}"
+ },
+ "enroll.notEnrolled": {
+  "g": "Metodi di verifica",
+  "t": "Register at least {min} methods: you will need them to reset your password or unlock your account without calling the help desk.",
+  "d": "{min}"
+ },
+ "enroll.none": {
+  "g": "Metodi di verifica",
+  "t": "No methods registered.",
+  "d": ""
+ },
+ "enroll.add": {
+  "g": "Metodi di verifica",
+  "t": "Add: {method}",
+  "d": ""
+ },
+ "enroll.replace": {
+  "g": "Metodi di verifica",
+  "t": "Replace: {method}",
+  "d": ""
+ },
+ "enroll.remove": {
+  "g": "Metodi di verifica",
+  "t": "Remove",
+  "d": ""
+ },
+ "enroll.removeConfirm": {
+  "g": "Metodi di verifica",
+  "t": "Remove the method \"{method}\"?",
+  "d": ""
+ },
+ "enroll.removed": {
+  "g": "Metodi di verifica",
+  "t": "Method removed.",
+  "d": ""
+ },
+ "enroll.added": {
+  "g": "Metodi di verifica",
+  "t": "Method registered.",
+  "d": ""
+ },
+ "enroll.totpAdded": {
+  "g": "Metodi di verifica",
+  "t": "Authenticator app registered.",
+  "d": ""
+ },
+ "enroll.disabled": {
+  "g": "Metodi di verifica",
+  "t": "Verification methods are managed by the help desk.",
+  "d": ""
+ },
+ "totp.title": {
+  "g": "Metodi di verifica",
+  "t": "Authenticator app",
+  "d": ""
+ },
+ "totp.text": {
+  "g": "Metodi di verifica",
+  "t": "Open the app (Microsoft Authenticator, Google Authenticator or similar), add an account and scan the QR code.",
+  "d": ""
+ },
+ "totp.manual": {
+  "g": "Metodi di verifica",
+  "t": "If you cannot scan it, enter this key:",
+  "d": ""
+ },
+ "totp.code": {
+  "g": "Metodi di verifica",
+  "t": "Code shown by the app",
+  "d": ""
+ },
+ "dest.sms.title": {
+  "g": "Metodi di verifica",
+  "t": "Mobile phone for text messages",
+  "d": ""
+ },
+ "dest.sms.label": {
+  "g": "Metodi di verifica",
+  "t": "Mobile number (e.g. +44 7700 900123)",
+  "d": ""
+ },
+ "dest.email.title": {
+  "g": "Metodi di verifica",
+  "t": "Personal email",
+  "d": ""
+ },
+ "dest.email.label": {
+  "g": "Metodi di verifica",
+  "t": "Personal email address (not your work one)",
+  "d": ""
+ },
+ "dest.send": {
+  "g": "Metodi di verifica",
+  "t": "Send the code",
+  "d": ""
+ },
+ "dest.sent": {
+  "g": "Metodi di verifica",
+  "t": "We sent a code to {destination}.",
+  "d": "{destination}"
+ },
+ "dest.code": {
+  "g": "Metodi di verifica",
+  "t": "Code received",
+  "d": ""
+ },
+ "stepup.title": {
+  "g": "Metodi di verifica",
+  "t": "Confirm your identity",
+  "d": ""
+ },
+ "stepup.text": {
+  "g": "Metodi di verifica",
+  "t": "For security reasons, confirm with one of your registered methods.",
+  "d": ""
+ },
+ "stepup.method": {
+  "g": "Metodi di verifica",
+  "t": "Confirm with",
+  "d": ""
+ },
+ "stepup.send": {
+  "g": "Metodi di verifica",
+  "t": "Send the code",
+  "d": ""
+ },
+ "stepup.code": {
+  "g": "Metodi di verifica",
+  "t": "Verification code",
+  "d": ""
+ },
+ "stepup.sent": {
+  "g": "Metodi di verifica",
+  "t": "Code sent to {destination}.",
+  "d": "{destination}"
+ },
+ "stepup.totpHint": {
+  "g": "Metodi di verifica",
+  "t": "Enter the code shown by your authenticator app.",
+  "d": ""
+ },
+ "stepup.done": {
+  "g": "Metodi di verifica",
+  "t": "Identity confirmed: repeat the operation.",
+  "d": ""
+ },
+ "change.title": {
+  "g": "Cambio password",
+  "t": "Change password",
+  "d": ""
+ },
+ "change.current": {
+  "g": "Cambio password",
+  "t": "Current password",
+  "d": ""
+ },
+ "change.new": {
+  "g": "Cambio password",
+  "t": "New password",
+  "d": ""
+ },
+ "change.repeat": {
+  "g": "Cambio password",
+  "t": "Repeat the new password",
+  "d": ""
+ },
+ "change.submit": {
+  "g": "Cambio password",
+  "t": "Change password",
+  "d": ""
+ },
+ "change.mismatch": {
+  "g": "Cambio password",
+  "t": "The two passwords do not match.",
+  "d": ""
+ },
+ "change.done.title": {
+  "g": "Cambio password",
+  "t": "Password changed",
+  "d": ""
+ },
+ "change.done.text": {
+  "g": "Cambio password",
+  "t": "Use the new password right away. On your other devices (phone, mail) update it when asked.",
+  "d": ""
+ },
+ "pwd.minLength": {
+  "g": "Cambio password",
+  "t": "At least {min} characters",
+  "d": "{min}"
+ },
+ "pwd.valid": {
+  "g": "Cambio password",
+  "t": "Valid password",
+  "d": ""
+ },
+ "start.reset.title": {
+  "g": "Reset e sblocco",
+  "t": "Reset your password",
+  "d": ""
+ },
+ "start.unlock.title": {
+  "g": "Reset e sblocco",
+  "t": "Unlock your account",
+  "d": ""
+ },
+ "start.user": {
+  "g": "Reset e sblocco",
+  "t": "User name (e.g. john.smith or john.smith@company.com)",
+  "d": ""
+ },
+ "flow.title": {
+  "g": "Reset e sblocco",
+  "t": "Verify your identity",
+  "d": ""
+ },
+ "flow.progress": {
+  "g": "Reset e sblocco",
+  "t": "Verifications completed: {done} of {required}. Choose how to receive the code.",
+  "d": "{done}, {required}"
+ },
+ "flow.use": {
+  "g": "Reset e sblocco",
+  "t": "Use",
+  "d": ""
+ },
+ "flow.send": {
+  "g": "Reset e sblocco",
+  "t": "Send code",
+  "d": ""
+ },
+ "flow.verified": {
+  "g": "Reset e sblocco",
+  "t": "verified",
+  "d": ""
+ },
+ "flow.code": {
+  "g": "Reset e sblocco",
+  "t": "Code",
+  "d": ""
+ },
+ "flow.verify": {
+  "g": "Reset e sblocco",
+  "t": "Verify",
+  "d": ""
+ },
+ "flow.sent": {
+  "g": "Reset e sblocco",
+  "t": "Code sent to {destination}. If it does not arrive within a few minutes, choose another method.",
+  "d": "{destination}"
+ },
+ "flow.totpHint": {
+  "g": "Reset e sblocco",
+  "t": "Enter the code shown by your authenticator app.",
+  "d": ""
+ },
+ "flow.noCode": {
+  "g": "Reset e sblocco",
+  "t": "If you do not receive any code, your account may not be registered with the portal: contact the help desk {helpdesk}.",
+  "d": "{helpdesk}"
+ },
+ "flow.next": {
+  "g": "Reset e sblocco",
+  "t": "Verification successful. Complete the next one.",
+  "d": ""
+ },
+ "newpwd.title": {
+  "g": "Reset e sblocco",
+  "t": "New password",
+  "d": ""
+ },
+ "newpwd.submit": {
+  "g": "Reset e sblocco",
+  "t": "Set the password",
+  "d": ""
+ },
+ "unlock.title": {
+  "g": "Reset e sblocco",
+  "t": "Unlock your account",
+  "d": ""
+ },
+ "unlock.text": {
+  "g": "Reset e sblocco",
+  "t": "Verification completed. Confirm to unlock your account.",
+  "d": ""
+ },
+ "unlock.submit": {
+  "g": "Reset e sblocco",
+  "t": "Unlock",
+  "d": ""
+ },
+ "done.reset.title": {
+  "g": "Reset e sblocco",
+  "t": "Password reset",
+  "d": ""
+ },
+ "done.reset.text": {
+  "g": "Reset e sblocco",
+  "t": "You can now sign in with your new password. Update it on your phone and mail when asked.",
+  "d": ""
+ },
+ "done.unlock.title": {
+  "g": "Reset e sblocco",
+  "t": "Account unlocked",
+  "d": ""
+ },
+ "done.unlock.text": {
+  "g": "Reset e sblocco",
+  "t": "You can now sign in again with your password.",
+  "d": ""
+ },
+ "err.sessionExpired": {
+  "g": "Messaggi di errore",
+  "t": "Session expired: reload the page.",
+  "d": ""
+ },
+ "err.rateLimit": {
+  "g": "Messaggi di errore",
+  "t": "Too many attempts. Please try again later.",
+  "d": ""
+ },
+ "err.rateLimitWait": {
+  "g": "Messaggi di errore",
+  "t": "(wait about {minutes} minutes)",
+  "d": "{minutes}"
+ },
+ "err.loginFailed": {
+  "g": "Messaggi di errore",
+  "t": "Invalid user name or password.",
+  "d": ""
+ },
+ "err.loginRequired": {
+  "g": "Messaggi di errore",
+  "t": "Sign-in required.",
+  "d": ""
+ },
+ "err.notManageable": {
+  "g": "Messaggi di errore",
+  "t": "This account cannot use the portal: contact the help desk.",
+  "d": ""
+ },
+ "err.disabled": {
+  "g": "Messaggi di errore",
+  "t": "The account is disabled.",
+  "d": ""
+ },
+ "err.featureDisabled": {
+  "g": "Messaggi di errore",
+  "t": "Feature not available.",
+  "d": ""
+ },
+ "err.windowsRequired": {
+  "g": "Messaggi di errore",
+  "t": "For this operation sign in from a company PC with your Windows account.",
+  "d": ""
+ },
+ "err.stepUpRequired": {
+  "g": "Messaggi di errore",
+  "t": "First confirm your identity with a registered method.",
+  "d": ""
+ },
+ "err.methodUnavailable": {
+  "g": "Messaggi di errore",
+  "t": "Method not available.",
+  "d": ""
+ },
+ "err.methodInvalid": {
+  "g": "Messaggi di errore",
+  "t": "Invalid method.",
+  "d": ""
+ },
+ "err.phoneInvalid": {
+  "g": "Messaggi di errore",
+  "t": "Invalid mobile number.",
+  "d": ""
+ },
+ "err.emailInvalid": {
+  "g": "Messaggi di errore",
+  "t": "Invalid email address.",
+  "d": ""
+ },
+ "err.emailCorporate": {
+  "g": "Messaggi di errore",
+  "t": "Enter a personal email address, different from your work one.",
+  "d": ""
+ },
+ "err.codeInvalid": {
+  "g": "Messaggi di errore",
+  "t": "Invalid code.",
+  "d": ""
+ },
+ "err.codeExpired": {
+  "g": "Messaggi di errore",
+  "t": "Code expired or too many attempts: request a new one.",
+  "d": ""
+ },
+ "err.codeRequestNew": {
+  "g": "Messaggi di errore",
+  "t": "Request a new code.",
+  "d": ""
+ },
+ "err.totpInvalid": {
+  "g": "Messaggi di errore",
+  "t": "Invalid code: check the time on your phone and try again.",
+  "d": ""
+ },
+ "err.totpStartFirst": {
+  "g": "Messaggi di errore",
+  "t": "Start the app setup first.",
+  "d": ""
+ },
+ "err.minMethods": {
+  "g": "Messaggi di errore",
+  "t": "At least {min} methods are required: add another one before removing this one.",
+  "d": "{min}"
+ },
+ "err.removalDisabled": {
+  "g": "Messaggi di errore",
+  "t": "Removing methods is not allowed: contact the help desk.",
+  "d": ""
+ },
+ "err.sendFailed": {
+  "g": "Messaggi di errore",
+  "t": "Could not send the code. Try again or use another method.",
+  "d": ""
+ },
+ "err.fieldsRequired": {
+  "g": "Messaggi di errore",
+  "t": "Fill in all fields.",
+  "d": ""
+ },
+ "err.pwdRequirements": {
+  "g": "Messaggi di errore",
+  "t": "The new password does not meet the requirements.",
+  "d": ""
+ },
+ "err.pwdBreached": {
+  "g": "Messaggi di errore",
+  "t": "This password appears in lists of stolen passwords: choose another one.",
+  "d": ""
+ },
+ "err.pwdBreachUnavailable": {
+  "g": "Messaggi di errore",
+  "t": "The breached-password check is not available: try again later.",
+  "d": ""
+ },
+ "err.wrongCurrent": {
+  "g": "Messaggi di errore",
+  "t": "The current password is not correct.",
+  "d": ""
+ },
+ "err.adRejectedChange": {
+  "g": "Messaggi di errore",
+  "t": "Active Directory rejected the password: it may have been used recently or changed too recently.",
+  "d": ""
+ },
+ "err.accountLocked": {
+  "g": "Messaggi di errore",
+  "t": "The account is locked: use the unlock feature.",
+  "d": ""
+ },
+ "err.changeFailed": {
+  "g": "Messaggi di errore",
+  "t": "Password change failed. Try again or contact the help desk.",
+  "d": ""
+ },
+ "err.flowExpired": {
+  "g": "Messaggi di errore",
+  "t": "Session expired: start again.",
+  "d": ""
+ },
+ "err.operationInvalid": {
+  "g": "Messaggi di errore",
+  "t": "Invalid operation.",
+  "d": ""
+ },
+ "err.userRequired": {
+  "g": "Messaggi di errore",
+  "t": "Enter your user name.",
+  "d": ""
+ },
+ "err.chooseMethod": {
+  "g": "Messaggi di errore",
+  "t": "Choose a method first.",
+  "d": ""
+ },
+ "err.tooManyCodes": {
+  "g": "Messaggi di errore",
+  "t": "Too many wrong codes: start again.",
+  "d": ""
+ },
+ "err.notVerified": {
+  "g": "Messaggi di errore",
+  "t": "Identity verification not completed.",
+  "d": ""
+ },
+ "err.notAllowed": {
+  "g": "Messaggi di errore",
+  "t": "Operation not allowed.",
+  "d": ""
+ },
+ "err.adRejectedReset": {
+  "g": "Messaggi di errore",
+  "t": "Active Directory rejected the password (history or requirements): choose another one.",
+  "d": ""
+ },
+ "err.resetFailed": {
+  "g": "Messaggi di errore",
+  "t": "Reset failed. Contact the help desk.",
+  "d": ""
+ },
+ "err.unlockFailed": {
+  "g": "Messaggi di errore",
+  "t": "Unlock failed. Contact the help desk.",
+  "d": ""
+ },
+ "err.unexpected": {
+  "g": "Messaggi di errore",
+  "t": "Unexpected error. Try again or contact the help desk.",
+  "d": ""
+ },
+ "err.busy": {
+  "g": "Messaggi di errore",
+  "t": "Service temporarily busy: try again shortly.",
+  "d": ""
+ },
+ "notify.purpose.enroll": {
+  "g": "Notifiche",
+  "t": "registration",
+  "d": ""
+ },
+ "notify.purpose.change": {
+  "g": "Notifiche",
+  "t": "the password change",
+  "d": ""
+ },
+ "notify.purpose.reset": {
+  "g": "Notifiche",
+  "t": "the password reset",
+  "d": ""
+ },
+ "notify.purpose.unlock": {
+  "g": "Notifiche",
+  "t": "the account unlock",
+  "d": ""
+ },
+ "notify.purpose.stepup": {
+  "g": "Notifiche",
+  "t": "identity confirmation",
+  "d": ""
+ },
+ "notify.code.subject": {
+  "g": "Notifiche",
+  "t": "Verification code - {company}",
+  "d": "Segnaposto: {code}, {minutes}, {purpose}, {company}"
+ },
+ "notify.code.body": {
+  "g": "Notifiche",
+  "t": "Your code for {purpose} is {code}.\nIt is valid for {minutes} minutes. Do not share it with anyone: the help desk will never ask for it.\n\n{company}",
+  "d": ""
+ },
+ "notify.code.sms": {
+  "g": "Notifiche",
+  "t": "{company}: code {code} for {purpose}, valid {minutes} min. Do not share it.",
+  "d": ""
+ },
+ "notify.methodAdded.subject": {
+  "g": "Notifiche",
+  "t": "Verification method added - {company}",
+  "d": ""
+ },
+ "notify.methodAdded.body": {
+  "g": "Notifiche",
+  "t": "Hello {displayName},\na new verification method was registered on your account {user}: {method}. If this wasn't you, contact the help desk immediately ({helpdesk}).\n\n{company}",
+  "d": "{displayName}, {user}, {method}, {time}"
+ },
+ "notify.methodAdded.sms": {
+  "g": "Notifiche",
+  "t": "{company}: method {method} added to your account. If this wasn't you, contact the help desk immediately ({helpdesk}).",
+  "d": ""
+ },
+ "notify.methodRemoved.subject": {
+  "g": "Notifiche",
+  "t": "Verification method removed - {company}",
+  "d": ""
+ },
+ "notify.methodRemoved.body": {
+  "g": "Notifiche",
+  "t": "Hello {displayName},\nthe verification method {method} was removed from your account {user}. If this wasn't you, contact the help desk immediately ({helpdesk}).\n\n{company}",
+  "d": ""
+ },
+ "notify.methodRemoved.sms": {
+  "g": "Notifiche",
+  "t": "{company}: method {method} removed from your account. If this wasn't you, contact the help desk immediately ({helpdesk}).",
+  "d": ""
+ },
+ "notify.passwordChanged.subject": {
+  "g": "Notifiche",
+  "t": "Password changed - {company}",
+  "d": ""
+ },
+ "notify.passwordChanged.body": {
+  "g": "Notifiche",
+  "t": "Hello {displayName},\nthe password of your account {user} was changed on {time}. If this wasn't you, contact the help desk immediately ({helpdesk}).\n\n{company}",
+  "d": ""
+ },
+ "notify.passwordChanged.sms": {
+  "g": "Notifiche",
+  "t": "{company}: password of account {user} changed. If this wasn't you, contact the help desk immediately ({helpdesk}).",
+  "d": ""
+ },
+ "notify.passwordReset.subject": {
+  "g": "Notifiche",
+  "t": "Password reset - {company}",
+  "d": ""
+ },
+ "notify.passwordReset.body": {
+  "g": "Notifiche",
+  "t": "Hello {displayName},\nthe password of your account {user} was reset from the portal on {time}. If this wasn't you, contact the help desk immediately ({helpdesk}).\n\n{company}",
+  "d": ""
+ },
+ "notify.passwordReset.sms": {
+  "g": "Notifiche",
+  "t": "{company}: password of account {user} reset. If this wasn't you, contact the help desk immediately ({helpdesk}).",
+  "d": ""
+ },
+ "notify.accountUnlocked.subject": {
+  "g": "Notifiche",
+  "t": "Account unlocked - {company}",
+  "d": ""
+ },
+ "notify.accountUnlocked.body": {
+  "g": "Notifiche",
+  "t": "Hello {displayName},\nyour account {user} was unlocked from the portal on {time}. If this wasn't you, contact the help desk immediately ({helpdesk}).\n\n{company}",
+  "d": ""
+ },
+ "notify.accountUnlocked.sms": {
+  "g": "Notifiche",
+  "t": "{company}: account {user} unlocked. If this wasn't you, contact the help desk immediately ({helpdesk}).",
+  "d": ""
+ },
+ "notify.adminUnlock.subject": {
+  "g": "Notifiche",
+  "t": "Account unlocked by the help desk - {company}",
+  "d": ""
+ },
+ "notify.adminUnlock.body": {
+  "g": "Notifiche",
+  "t": "Hello {displayName},\nyour account {user} was unlocked by the help desk on {time}. If this wasn't you, contact the help desk immediately ({helpdesk}).\n\n{company}",
+  "d": ""
+ },
+ "notify.adminUnlock.sms": {
+  "g": "Notifiche",
+  "t": "{company}: account {user} unlocked by the help desk. If this wasn't you, contact the help desk immediately ({helpdesk}).",
+  "d": ""
+ },
+ "notify.adminClearEnrollment.subject": {
+  "g": "Notifiche",
+  "t": "Verification methods cleared - {company}",
+  "d": ""
+ },
+ "notify.adminClearEnrollment.body": {
+  "g": "Notifiche",
+  "t": "Hello {displayName},\nthe help desk cleared the verification methods of your account {user}: register them again at {portalUrl}. If this wasn't you, contact the help desk immediately ({helpdesk}).\n\n{company}",
+  "d": ""
+ },
+ "notify.adminClearEnrollment.sms": {
+  "g": "Notifiche",
+  "t": "{company}: verification methods of account {user} cleared by the help desk. If this wasn't you, contact the help desk immediately ({helpdesk}).",
+  "d": ""
+ },
+ "notify.adminTemporaryReset.subject": {
+  "g": "Notifiche",
+  "t": "Password reset by the help desk - {company}",
+  "d": ""
+ },
+ "notify.adminTemporaryReset.body": {
+  "g": "Notifiche",
+  "t": "Hello {displayName},\nthe help desk set a temporary password on your account {user}: you will have to change it at the next sign-in. If this wasn't you, contact the help desk immediately ({helpdesk}).\n\n{company}",
+  "d": ""
+ },
+ "notify.adminTemporaryReset.sms": {
+  "g": "Notifiche",
+  "t": "{company}: temporary password set by the help desk on account {user}. If this wasn't you, contact the help desk immediately ({helpdesk}).",
+  "d": ""
+ },
+ "notify.expiry.subject": {
+  "g": "Notifiche",
+  "t": "Your password expires in {days} days - {company}",
+  "d": "Segnaposto: {days}, {expiry}, {user}, {displayName}"
+ },
+ "notify.expiry.body": {
+  "g": "Notifiche",
+  "t": "Hello {displayName},\nthe password of your account {user} expires on {expiry} (in {days} days).\nChange it now at {portalUrl}: from a company PC it only takes a few seconds.\nIf you have not done it yet, also register your verification methods: you will need them if you forget your password.\n\n{company}",
+  "d": ""
+ },
+ "notify.expiry.sms": {
+  "g": "Notifiche",
+  "t": "{company}: the password of account {user} expires in {days} days. Change it at {portalUrl}.",
+  "d": ""
+ },
+ "notify.invite.subject": {
+  "g": "Notifiche",
+  "t": "Register with the password portal - {company}",
+  "d": ""
+ },
+ "notify.invite.body": {
+  "g": "Notifiche",
+  "t": "Hello {displayName},\nregister your verification methods at {portalUrl}: you will need them to reset your password or unlock your account on your own, without calling the help desk.\nIt only takes a few minutes from a company PC.\n\n{company}",
+  "d": ""
+ }
+}

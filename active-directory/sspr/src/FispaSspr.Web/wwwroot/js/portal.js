@@ -4,12 +4,18 @@ const State = { flow: null, purpose: null, destMethod: null, destChallenge: null
 const M = (m) => T('method.' + m);
 const F = () => Api.ui.features || {};
 
-document.addEventListener('DOMContentLoaded', async () => {
-  await Api.loadUi();
+function applyUi() {
   applyTexts();
   applyBranding();
   applyFeatures();
   $('#flow-nocode').textContent = T('flow.noCode');
+  renderLangPicker(() => { applyUi(); updateWho(Api.session); });
+}
+
+document.addEventListener('DOMContentLoaded', async () => {
+  Api.initLang();
+  await Api.loadUi();
+  applyUi();
   const s = await Api.refresh();
   updateWho(s);
   $$('[data-go]').forEach(b => b.addEventListener('click', () => go(b.dataset.go)));

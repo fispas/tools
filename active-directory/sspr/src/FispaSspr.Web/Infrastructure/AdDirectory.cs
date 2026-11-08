@@ -151,6 +151,40 @@ public sealed class AdDirectory : IDirectory, IEnrollmentStore
         return list;
     }, ct);
 
+public sealed record ScopeUser(string Sid, string SamAccountName, string? DisplayName, string? Mail, DateTimeOffset? PasswordExpires, IReadOnlyDictionary<string, string?> Attributes);
+
+    /// <summary>
+    /// Utenti attivi nelle OU abilitate, con scadenza della password (msDS-UserPasswordExpiryTimeComputed) e attributi SSPR,
+    /// in un'unica ricerca paginata per OU. Non applica la protezione degli account: chi usa i dati la verifica sul singolo utente.
+    /// </summary>
+    public Task<IReadOnlyList<ScopeUser>> EnumerateScopeAsync(CancellationToken ct = default) => Task.Run<IReadOnlyList<ScopeUser>>(() =>
+    {
+        var list = new List<ScopeUser>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var props = new List<string> { "sAMAccountName", "displayName", "mail", "objectSid", "msDS-UserPasswordExpiryTimeComputed" };
+        props.AddRange(SsprAttributes.All);
+        foreach (var ou in _settings.Current.Directory.AllowedOus)
+        {
+            ct.ThrowIfCancellationRequested();
+            using var root = Entry(ou);
+            using var ds = new DirectorySearcher(root, "(&(objectCategory=person)(objectClass=user)(!(userAccountControl:1.2.840.113556.1.4.803:=2)))", props.ToArray()) { PageSize = 1000, SearchScope = SearchScope.Subtree };
+            using var results = ds.FindAll();
+            foreach (SearchResult r in results)
+            {
+                if (r.Properties["objectSid"].Count == 0) continue;
+                var sid = new SecurityIdentifier((byte[])r.Properties["objectSid"][0], 0).Value;
+                if (!seen.Add(sid)) continue;
+                DateTimeOffset? exp = null;
+                if (r.Properties["msDS-UserPasswordExpiryTimeComputed"].Count > 0 && r.Properties["msDS-UserPasswordExpiryTimeComputed"][0] is long ft && ft > 0 && ft < DateTime.MaxValue.ToFileTimeUtc())
+                    exp = DateTimeOffset.FromFileTime(ft);
+                var attrs = SsprAttributes.All.ToDictionary(a => a, a => r.Properties[a].Count > 0 ? r.Properties[a][0] as string : null);
+                list.Add(new ScopeUser(sid, (string)r.Properties["sAMAccountName"][0], r.Properties["displayName"].Count > 0 ? r.Properties["displayName"][0] as string : null,
+                    r.Properties["mail"].Count > 0 ? r.Properties["mail"][0] as string : null, exp, attrs));
+            }
+        }
+        return list;
+    }, ct);
+
     public Task<(int InScope, int Enrolled)> CountUsersAsync(CancellationToken ct = default) => Task.Run(() =>
     {
         int total = 0, enrolled = 0;

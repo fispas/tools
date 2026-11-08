@@ -1,6 +1,6 @@
 # sspr — Self Service Password Reset (on-prem)
 
-> **Versione 0.3.0** — motore, servizio web, portale utenti, pannello di amministrazione completamente personalizzabile e installer guidato scritti. **Mai compilato né eseguito finora**: la prima verifica reale è la pipeline GitHub Actions, poi un'installazione di prova in laboratorio. Su richiesta, il progetto vive qui in `fispas/tools`, anche se è un'applicazione web.
+> **Versione 0.4.0** — motore, servizio web, portale utenti multilingua, pannello di amministrazione completamente personalizzabile con report, avvisi di scadenza, campagne di registrazione, inoltro a SIEM e installer guidato scritti. **Mai compilato né eseguito finora**: la prima verifica reale è la pipeline GitHub Actions, poi un'installazione di prova in laboratorio. Su richiesta, il progetto vive qui in `fispas/tools`, anche se è un'applicazione web.
 
 ## Installazione rapida
 
@@ -37,20 +37,22 @@ Tutto si cambia dal pannello, senza riavvio e senza toccare file. Ogni sezione s
 
 | Sezione | Cosa si personalizza |
 |---|---|
-| **Generale** | Nome azienda, titolo e sottotitolo del portale, indirizzo pubblicato, contatto help desk, collegamento alla guida, prefisso telefonico predefinito, **avviso in evidenza** (informazione / attenzione / importante) |
+| **Generale** | Nome azienda, titolo e sottotitolo del portale, indirizzo pubblicato, contatto help desk, collegamento alla guida, prefisso telefonico predefinito, **avviso in evidenza** (informazione / attenzione / importante), **lingue del portale** (italiano, inglese; la prima è la predefinita, con più lingue compare il selettore e si usa la lingua del browser) |
 | **Aspetto** | **Logo**, **icona della scheda**, **immagine di sfondo** (caricati dal pannello, formato riconosciuto dai byte, SVG con script o riferimenti esterni rifiutati), 10 colori (principale, sfondi, testi, intestazione, esiti), carattere, arrotondamenti, altezza del logo, nome azienda in intestazione sì/no, **CSS personalizzato** (senza @import, URL esterni o script) |
-| **Testi** | **Ogni testo** del portale e ogni messaggio di errore (174 voci in catalogo, con ricerca, filtro per sezione, "solo personalizzati", ripristino del predefinito). Segnaposto `{company}`, `{helpdesk}`, `{portalUrl}` e quelli specifici di ogni testo |
+| **Testi** | **Ogni testo** del portale e ogni messaggio di errore, **per ogni lingua** (178 voci in catalogo, con ricerca, filtro per sezione, "solo personalizzati", ripristino del predefinito). Segnaposto `{company}`, `{helpdesk}`, `{portalUrl}` e quelli specifici di ogni testo |
 | **Notifiche** | Attivazione per evento (metodo aggiunto/rimosso, password cambiata/reimpostata, sblocco, azioni dell'help desk), canali (email personale, SMS, email aziendale), **oggetto, testo email e testo SMS** di ogni notifica e del codice di verifica |
 | **Funzioni** | Reset, sblocco, cambio password, registrazione autonoma, rimozione dei metodi, verifica dal vivo della password, accesso Windows / con password, prima registrazione solo da PC aziendale, conferma con metodo esistente per modificare i metodi, comportamento del reset (sblocca, cambio obbligatorio, invio codici in background), azioni consentite all'help desk, reset con password temporanea |
 | **Verifica e password** | Metodi attivi, minimi da registrare, verifiche per reset e sblocco, durata e tentativi dei codici, tolleranza TOTP, nome nell'app, lunghezza minima, parole vietate, password compromesse (online k-anonymity / lista locale / no) |
 | **Sicurezza** | Limiti per utente, IP e globali, codici all'ora, durate di sessione utente e pannello, validità della conferma d'identità, tempo minimo di risposta, tentativi del secondo fattore, conservazione dell'audit |
 | **Email e SMS** | SMTP e gateway SMS con prova di invio |
+| **Scadenze e campagne** | **Avviso di scadenza della password** (soglie in giorni, es. 14/7/3/1, ora di invio, email aziendale e/o metodi registrati; usa `msDS-UserPasswordExpiryTimeComputed`, quindi rispetta dominio e PSO) e **campagna di registrazione** (invito periodico a chi non ha registrato i metodi, intervallo, massimo per esecuzione), con pulsante *Esegui ora* |
+| **Integrazioni** | Inoltro di ogni evento dell'audit a **syslog** (RFC 5424, UDP o TCP) per il SIEM e a un **webhook** (Teams, Slack, chat: POST `{"text": ...}`), anche solo per gli eventi rilevanti |
 | **Directory** | Domain controller, OU abilitate, gruppi esclusi |
 | **Avanzate** | Configurazione completa in JSON, esporta/importa |
 
 Restano fuori dal pannello, per sicurezza, solo porta, certificato, gMSA, gruppi degli operatori e obbligo del secondo fattore per il pannello: si cambiano rieseguendo l'installer.
 
-I testi predefiniti stanno in `src/FispaSspr.Web/Texts/texts.it.json`, generato da `tools/gen-texts.py`.
+I testi predefiniti stanno in `src/FispaSspr.Web/Texts/texts.<lingua>.json` (it, en), generati da `tools/gen-texts.py`. Le personalizzazioni si salvano come `chiave` (italiano) o `en:chiave` (altre lingue).
 
 ## Struttura della cartella
 | Percorso | Contenuto |
@@ -153,6 +155,7 @@ Classe ausiliaria `fispaSsprUser` aggiunta alla classe `user`, con gli attributi
 - **Dashboard**: percentuale di utenti registrati, reset, cambi e sblocchi per periodo, blocchi in corso, tentativi sospetti.
 - **Utenti**: ricerca solo nelle OU abilitate, dettaglio con metodi mascherati e ultimi eventi.
 - **Audit**: registro filtrabile ed esportabile in CSV.
+- **Report**: stato della registrazione e scadenza della password di tutti gli utenti delle OU abilitate, con indicatori, filtri, ordinamento ed esportazione CSV.
 - **Configurazione**:
   - OU abilitate e gruppi esclusi;
   - metodi richiesti e durata dei codici;
@@ -202,6 +205,7 @@ Classe ausiliaria `fispaSsprUser` aggiunta alla classe `user`, con gli attributi
 6. Documentazione utente e amministratore, pagina da distribuire agli utenti.
 
 ## Changelog
+- **0.4.0** — portale multilingua (italiano e inglese, selettore in intestazione, testi personalizzabili per lingua); avvisi di scadenza della password e campagna di registrazione pianificati, con *Esegui ora* (eventi 1700-1702); report registrazioni e scadenze con CSV; inoltro dell'audit a syslog/SIEM e webhook; nuova grafica del portale e del pannello (icone, indicatori, schede, tabelle ordinabili). Validazione delle nuove impostazioni.
 - **0.3.0** — personalizzazione completa dal pannello (logo, icona, sfondo, colori, carattere, CSS, avviso, tutti i testi, notifiche per evento e canale, funzioni attivabili, impostazioni granulari, esporta/importa); editor della configurazione a schede al posto del JSON. Sicurezza: conferma d'identità per modifiche ai metodi e cambio password, prima registrazione solo da Windows (opzionale), verifica credenziali con LDAP "Who am I", rotazione della sessione al logout, scadenze di sessione utente e pannello, limite ai codici errati del secondo fattore, invio dei codici di reset in background, regole PSO solo dopo la verifica, solo oggetti utente da SID, file dell'aspetto validati, CSV senza formula injection, pulizia dell'audit, notifiche anche per le azioni dell'help desk (prima dell'azzeramento). `restore` chiede la password da console.
 - **0.2.0** — servizio web (`FispaSspr.Web`), portale utenti, pannello di amministrazione con 2FA operatori, installer guidato `Install-FispaSSPR.ps1` (gMSA, schema, deleghe, certificato, servizio), pacchetto pubblicato dalla CI.
 - **0.1.0** — motore `FispaSspr.Core`, test, schema AD, documentazione del formato cifrato e degli eventi, contratto API.

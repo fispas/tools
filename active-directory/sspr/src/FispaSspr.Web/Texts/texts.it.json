@@ -59,6 +59,11 @@
   "t": "help desk aziendale",
   "d": "Usato se il contatto help desk non \u00e8 impostato"
  },
+ "ui.language": {
+  "g": "Generale",
+  "t": "Lingua",
+  "d": "Etichetta del selettore della lingua"
+ },
  "home.title": {
   "g": "Home",
   "t": "Cosa vuoi fare?",
@@ -857,6 +862,21 @@
  "notify.adminTemporaryReset.sms": {
   "g": "Notifiche",
   "t": "{company}: password temporanea impostata dall'help desk sull'account {user}. Se non sei stato tu, contatta subito l'help desk ({helpdesk}).",
+  "d": ""
+ },
+ "notify.expiry.subject": {
+  "g": "Notifiche",
+  "t": "La tua password scade tra {days} giorni - {company}",
+  "d": "Segnaposto: {days}, {expiry}, {user}, {displayName}"
+ },
+ "notify.expiry.body": {
+  "g": "Notifiche",
+  "t": "Ciao {displayName},\nla password del tuo account {user} scade il {expiry} (tra {days} giorni).\nCambiala ora da {portalUrl}: dal PC aziendale bastano pochi secondi.\nSe non l'hai ancora fatto, registra anche i metodi di verifica: ti serviranno se dimentichi la password.\n\n{company}",
+  "d": ""
+ },
+ "notify.expiry.sms": {
+  "g": "Notifiche",
+  "t": "{company}: la password dell'account {user} scade tra {days} giorni. Cambiala su {portalUrl}.",
   "d": ""
  },
  "notify.invite.subject": {

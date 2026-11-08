@@ -21,6 +21,31 @@ public sealed record SsprSettings
     public NotificationSettings Notifications { get; init; } = new();
     public SessionSettings Sessions { get; init; } = new();
     public AuditSettings Audit { get; init; } = new();
+    public ExpirySettings Expiry { get; init; } = new();
+    public CampaignSettings Campaign { get; init; } = new();
+}
+
+/// <summary>Avvisi di scadenza della password (controllo giornaliero).</summary>
+public sealed record ExpirySettings
+{
+    public bool Enabled { get; init; }
+    /// <summary>Giorni prima della scadenza in cui avvisare (es. 14, 7, 3, 1).</summary>
+    public IReadOnlyList<int> DaysBefore { get; init; } = new[] { 14, 7, 3, 1 };
+    /// <summary>Ora locale del controllo giornaliero (0-23).</summary>
+    public int HourOfDay { get; init; } = 8;
+    public bool ToCorporateEmail { get; init; } = true;
+    /// <summary>Anche sui metodi registrati (email personale / SMS).</summary>
+    public bool ToRegisteredMethods { get; init; }
+}
+
+/// <summary>Campagna di registrazione: inviti periodici agli utenti non ancora registrati.</summary>
+public sealed record CampaignSettings
+{
+    public bool Enabled { get; init; }
+    /// <summary>Lo stesso utente riceve un nuovo invito solo dopo questi giorni.</summary>
+    public int IntervalDays { get; init; } = 14;
+    public int MaxPerRun { get; init; } = 300;
+    public int HourOfDay { get; init; } = 9;
 }
 
 /// <summary>Funzioni attivabili singolarmente (controllate dal servizio, non solo nascoste nell'interfaccia).</summary>
@@ -119,6 +144,16 @@ public sealed record SessionSettings
 public sealed record AuditSettings
 {
     public int RetentionMonths { get; init; } = 24;
+    /// <summary>Inoltro degli eventi a un SIEM via syslog (RFC 5424).</summary>
+    public bool SyslogEnabled { get; init; }
+    public string SyslogHost { get; init; } = "";
+    public int SyslogPort { get; init; } = 514;
+    /// <summary>Udp oppure Tcp (framing a conteggio di ottetti, RFC 6587).</summary>
+    public string SyslogProtocol { get; init; } = "Udp";
+    /// <summary>Webhook (Teams, Slack o altro) che riceve {"text": "..."}.</summary>
+    public string WebhookUrl { get; init; } = "";
+    /// <summary>Solo esiti negativi (fallimenti, blocchi) e azioni degli operatori.</summary>
+    public bool WebhookOnlyIssues { get; init; } = true;
 }
 
 public sealed record GeneralSettings
@@ -127,6 +162,8 @@ public sealed record GeneralSettings
     public string PortalUrl { get; init; } = "";
     /// <summary>Obsoleto: sostituito da Branding.LogoFile (caricamento dal pannello). Ignorato.</summary>
     public string? LogoPath { get; init; }
+    /// <summary>Lingue dell'interfaccia (it, en). La prima e' la predefinita, usata anche per le notifiche.</summary>
+    public IReadOnlyList<string> Languages { get; init; } = new[] { "it" };
     public string HelpdeskContact { get; init; } = "";
     public string DefaultCountryCode { get; init; } = "39";
     public string Culture { get; init; } = "it-IT";

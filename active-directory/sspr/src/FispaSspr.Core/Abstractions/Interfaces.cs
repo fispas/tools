@@ -100,5 +100,8 @@ public enum AuditEventId
     RateLimitTriggered = 1602,
     ConfigurationChanged = 1900,
     BrandingChanged = 1901,
+    ExpiryNotified = 1700,
+    CampaignInvite = 1701,
+    JobRun = 1702,
     Error = 1990,
 }

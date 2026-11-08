@@ -34,8 +34,10 @@ paths:
   /ui:
     get:
       tags: [Sessione]
-      summary: Configurazione pubblica dell'interfaccia (testi personalizzati, aspetto, funzioni attive)
-      responses: { '200': { description: OK } }
+      summary: Configurazione pubblica dell'interfaccia (testi nella lingua richiesta, lingue attive, aspetto, funzioni attive)
+      description: La lingua si sceglie con l'intestazione X-Lang, il parametro lang o Accept-Language; vale per tutte le API (anche i messaggi di errore). Se non e' attiva si usa la predefinita.
+      parameters: [ { name: lang, in: query, required: false, schema: { type: string, pattern: '^[a-z]{2}$' } } ]
+      responses: { '200': { description: 'OK: { language, languages, texts, branding, features }' } }
   /session/windows:
     get:
       tags: [Sessione]
@@ -289,9 +291,26 @@ paths:
   /admin/texts:
     get:
       tags: [Amministrazione]
-      summary: Catalogo dei testi (chiave, sezione, descrizione, predefinito, personalizzato) per l'editor
+      summary: Catalogo dei testi di una lingua (chiave, sezione, descrizione, predefinito, personalizzato, chiave di salvataggio) per l'editor
       security: [ { adminWindows: [] } ]
-      responses: { '200': { description: OK } }
+      parameters: [ { name: lang, in: query, required: false, schema: { type: string, pattern: '^[a-z]{2}$' } } ]
+      responses: { '200': { description: 'OK: { language, defaultLanguage, supported, items: [ { key, group, description, defaultText, customText, storeKey } ] }' } }
+  /admin/reports/enrollment:
+    get:
+      tags: [Amministrazione]
+      summary: Utenti delle OU abilitate con stato della registrazione, metodi e scadenza della password (JSON o CSV)
+      security: [ { adminWindows: [] } ]
+      parameters: [ { name: format, in: query, required: false, schema: { type: string, enum: [csv] } } ]
+      responses: { '200': { description: 'Elenco { userName, displayName, mail, enrolled, methods, passwordExpires } o file CSV' } }
+  /admin/jobs/{job}/run:
+    post:
+      tags: [Amministrazione]
+      summary: Esegue subito un'attivita' pianificata (solo Admin) con le impostazioni salvate
+      security: [ { adminWindows: [] } ]
+      parameters: [ { name: job, in: path, required: true, schema: { type: string, enum: [expiry, campaign] } } ]
+      responses:
+        '200': { description: 'Esito { job, checked, sent, failed, message }' }
+        '404': { description: Attivita' sconosciuta }
   /admin/branding/{asset}:
     post:
       tags: [Amministrazione]

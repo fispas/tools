@@ -92,10 +92,17 @@ public sealed class AuditLog : IAuditLog
     private readonly ILogger<AuditLog> _log;
     private readonly object _lock = new();
     private readonly bool _eventLogAvailable;
+    private readonly SettingsStore _settings;
+    private readonly IHttpClientFactory _http;
+    private readonly System.Threading.Channels.Channel<Record> _forward =
+        System.Threading.Channels.Channel.CreateBounded<Record>(new System.Threading.Channels.BoundedChannelOptions(5000) { FullMode = System.Threading.Channels.BoundedChannelFullMode.DropOldest });
 
-    public AuditLog(ILogger<AuditLog> log)
+    public AuditLog(ILogger<AuditLog> log, SettingsStore settings, IHttpClientFactory http)
     {
         _log = log;
+        _settings = settings;
+        _http = http;
+        _ = Task.Run(ForwardLoop);
         try { _eventLogAvailable = OperatingSystem.IsWindows() && EventLog.SourceExists(Source); }
         catch (System.Security.SecurityException) { _eventLogAvailable = false; }
         catch (InvalidOperationException) { _eventLogAvailable = false; }
@@ -123,7 +130,63 @@ public sealed class AuditLog : IAuditLog
             catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception) { _log.LogWarning(ex, "Scrittura nel Registro eventi non riuscita"); }
         }
         _log.LogInformation("AUDIT {EventId} {Outcome} user={User} actor={Actor} ip={Ip} {Message}", entry.EventId, entry.Outcome, entry.TargetUser, entry.Actor, entry.ClientIp, entry.Message);
+        var a = _settings.Current.Audit;
+        if ((a.SyslogEnabled && !string.IsNullOrWhiteSpace(a.SyslogHost)) || !string.IsNullOrWhiteSpace(a.WebhookUrl)) _forward.Writer.TryWrite(rec);
         return Task.CompletedTask;
+    }
+
+    // ------------------------------------------------------------------ inoltro a SIEM (syslog) e webhook, fuori dal percorso della richiesta
+
+    private async Task ForwardLoop()
+    {
+        await foreach (var rec in _forward.Reader.ReadAllAsync().ConfigureAwait(false))
+        {
+            var a = _settings.Current.Audit;
+            if (a.SyslogEnabled && !string.IsNullOrWhiteSpace(a.SyslogHost))
+            {
+                try { await SendSyslog(a, rec).ConfigureAwait(false); }
+                catch (Exception ex) when (ex is System.Net.Sockets.SocketException or IOException or TimeoutException or OperationCanceledException) { _log.LogWarning(ex, "Inoltro syslog non riuscito"); }
+            }
+            if (!string.IsNullOrWhiteSpace(a.WebhookUrl) && (!a.WebhookOnlyIssues || rec.Outcome != nameof(AuditOutcome.Success) || rec.Actor is not null || rec.EventId == (int)AuditEventId.JobRun))
+            {
+                try
+                {
+                    var text = $"[FispaSSPR] {rec.Event} ({rec.EventId}) - {rec.Outcome}: {rec.Message}" +
+                               (rec.TargetUser is null ? "" : $" | utente {rec.TargetUser}") + (rec.Actor is null ? "" : $" | operatore {rec.Actor}") + (rec.ClientIp is null ? "" : $" | client {rec.ClientIp}");
+                    using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                    using var resp = await _http.CreateClient("webhook").PostAsync(a.WebhookUrl, new StringContent(JsonSerializer.Serialize(new { text }), Encoding.UTF8, "application/json"), cts.Token).ConfigureAwait(false);
+                    if (!resp.IsSuccessStatusCode) _log.LogWarning("Webhook: risposta {Status}", (int)resp.StatusCode);
+                }
+                catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException or InvalidOperationException) { _log.LogWarning(ex, "Inoltro al webhook non riuscito"); }
+            }
+        }
+    }
+
+    /// <summary>RFC 5424 su UDP oppure TCP (framing a conteggio di ottetti, RFC 6587). Facility authpriv (10).</summary>
+    private static async Task SendSyslog(AuditSettings a, Record rec)
+    {
+        var sev = rec.Outcome == nameof(AuditOutcome.Success) ? 6 : 4;
+        if (rec.EventId == (int)AuditEventId.Error) sev = 3;
+        static string P(string? v) => (v ?? "").Replace("\\", "\\\\", StringComparison.Ordinal).Replace("\"", "\\\"", StringComparison.Ordinal).Replace("]", "\\]", StringComparison.Ordinal);
+        var host = Environment.MachineName;
+        var msg = $"<{10 * 8 + sev}>1 {rec.Time.UtcDateTime:yyyy-MM-ddTHH:mm:ss.fffZ} {host} FispaSSPR - {rec.EventId} [fispa@32473 event=\"{P(rec.Event)}\" outcome=\"{P(rec.Outcome)}\" user=\"{P(rec.TargetUser)}\" actor=\"{P(rec.Actor)}\" ip=\"{P(rec.ClientIp)}\"] {rec.Message}";
+        var bytes = Encoding.UTF8.GetBytes(msg);
+        var port = Math.Clamp(a.SyslogPort, 1, 65535);
+        if (string.Equals(a.SyslogProtocol, "Tcp", StringComparison.OrdinalIgnoreCase))
+        {
+            using var tcp = new System.Net.Sockets.TcpClient();
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            await tcp.ConnectAsync(a.SyslogHost, port, cts.Token).ConfigureAwait(false);
+            var stream = tcp.GetStream();
+            var framed = Encoding.ASCII.GetBytes(bytes.Length.ToString(System.Globalization.CultureInfo.InvariantCulture) + " ");
+            await stream.WriteAsync(framed, cts.Token).ConfigureAwait(false);
+            await stream.WriteAsync(bytes, cts.Token).ConfigureAwait(false);
+        }
+        else
+        {
+            using var udp = new System.Net.Sockets.UdpClient();
+            await udp.SendAsync(bytes, bytes.Length, a.SyslogHost, port).ConfigureAwait(false);
+        }
     }
 
     /// <summary>Elimina i file mensili piu' vecchi della conservazione configurata.</summary>
