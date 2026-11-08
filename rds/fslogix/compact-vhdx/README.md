@@ -122,6 +122,7 @@ lavorazione resterebbe agganciato al server e l'utente non potrebbe accedere. Us
 | `CompactVHDX-Setup.ps1` | Installatore autonomo **generato**: contiene gli altri script in base64. Dopo ogni modifica ai sorgenti va rigenerato con `Build-CompactVHDXExe.ps1 -SetupOnly` |
 
 ## Changelog
+- **2.2.1** — una sola esecuzione alla volta (pianificata, manuale o simulazione): la seconda non parte e lo segnala nel Registro eventi; cartella degli hard link temporanei (`CompactVHDX.tmp` nella radice del volume) creata con accesso solo a SYSTEM e Administrators e usata solo se è una cartella vera di proprietà degli amministratori; la pulizia dei link rimasti elimina solo i file creati dallo strumento.
 - **2.2.0** — limiti noti risolti e nuova grafica:
   - **sessioni RDS**: prima di ogni disco si interrogano i session host (WTS) e si saltano gli utenti con una sessione aperta o disconnessa; dopo la compattazione si ricontrolla e si avvisa se l'utente è entrato nel frattempo. Session host indicati nelle impostazioni o rilevati dal Connection Broker; pulsante *Verifica sessioni*;
   - **percorsi non ASCII** (es. nomi con accenti): diskpart lavora su un hard link temporaneo con nome ASCII (`<volume>\CompactVHDX.tmp`, stesso file), rimosso subito dopo; i link rimasti da run interrotte vengono puliti all'avvio e i dischi agganciati tramite link sono riconosciuti dallo stop forzato;

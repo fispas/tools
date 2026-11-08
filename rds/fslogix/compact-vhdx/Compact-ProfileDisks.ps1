@@ -45,6 +45,16 @@ param(
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'CompactVHDX-Common.ps1')
 
+# una sola esecuzione alla volta (pianificata, manuale o simulazione): due run sugli stessi dischi si ostacolerebbero
+$script:RunMutex = New-Object System.Threading.Mutex($false, 'Global\FispaTools-CompactVHDX')
+$script:MutexOwned = $false
+try { $script:MutexOwned = $script:RunMutex.WaitOne(0) } catch [System.Threading.AbandonedMutexException] { $script:MutexOwned = $true }
+if (-not $script:MutexOwned) {
+    Write-Host "Un'altra compattazione e' gia' in corso: questa esecuzione ($Trigger) non parte."
+    Write-CVEvent 1003 "Compattazione VHDX ($Trigger) non avviata: un'altra esecuzione e' gia' in corso." 'Warning'
+    exit 2
+}
+
 $cfg = Get-CVConfig
 $Paths = if ($Path) { @($Path) } else { Get-CVProfilePaths $cfg }
 $PathText = $Paths -join '; '
@@ -489,4 +499,5 @@ try {
     Write-Status $final
     if (Test-Path -LiteralPath $script:CVStopFile) { Remove-Item -LiteralPath $script:CVStopFile -Force -ErrorAction SilentlyContinue }
     try { Stop-Transcript | Out-Null } catch { }
+    if ($script:MutexOwned) { try { $script:RunMutex.ReleaseMutex() } catch { } }
 }

@@ -14,7 +14,7 @@
 # ============================================================================
 #  Costanti e percorsi
 # ============================================================================
-$script:CVVersion   = '2.2.0'
+$script:CVVersion   = '2.2.1'
 # la cartella di installazione e' quella che contiene questa libreria: lo strumento funziona ovunque venga installato
 $script:CVBase      = if ($PSScriptRoot) { $PSScriptRoot } else { 'C:\Scripts\CompactVHDX' }
 $script:CVDefaultBase = 'C:\Scripts\CompactVHDX'
@@ -281,6 +281,15 @@ function Get-CVLinkDir([string]$Path) {
     Join-Path $root 'CompactVHDX.tmp'
 }
 
+# La cartella dei link sta nella radice del volume, dove di solito gli utenti possono creare cartelle:
+# deve essere una cartella vera (non un collegamento verso altre cartelle) con accesso solo a SYSTEM e Administrators
+function Test-CVLinkDirSafe([string]$Dir) {
+    $i = Get-Item -LiteralPath $Dir -Force -ErrorAction Stop
+    if (-not $i.PSIsContainer -or ($i.Attributes -band [IO.FileAttributes]::ReparsePoint)) { return $false }
+    $owner = (Get-Acl -LiteralPath $Dir).GetOwner([System.Security.Principal.SecurityIdentifier]).Value
+    $owner -in @('S-1-5-18', 'S-1-5-32-544')
+}
+
 function New-CVAsciiLink([string]$Path) {
     $dir = Get-CVLinkDir $Path
     if (-not $dir) { throw 'percorso di rete con caratteri non ASCII: non gestibile' }
@@ -288,19 +297,26 @@ function New-CVAsciiLink([string]$Path) {
     if (-not (Test-Path -LiteralPath $dir)) {
         $d = New-Item -ItemType Directory -Path $dir -Force
         $d.Attributes = [IO.FileAttributes]'Hidden, Directory'
+        Set-CVSecureFolder $dir
     }
+    if (-not (Test-CVLinkDirSafe $dir)) { throw "la cartella $dir non e' sicura (collegamento o proprietario non amministratore): eliminarla a mano" }
     $link = Join-Path $dir ('{0}{1}' -f [guid]::NewGuid().ToString('N'), [IO.Path]::GetExtension($Path))
     [CompactVHDX.Native]::HardLink($link, $Path)
     $link
 }
 
-# Hard link rimasti da una run interrotta: si eliminano (il file originale non viene toccato)
+# Hard link rimasti da una run interrotta: si eliminano (il file originale non viene toccato).
+# Solo i nomi creati da New-CVAsciiLink e solo in una cartella sicura: mai seguire un collegamento verso altre cartelle.
 function Remove-CVStaleLinks([string[]]$Roots) {
     foreach ($r in @($Roots)) {
         $dir = Get-CVLinkDir $r
-        if ($dir -and (Test-Path -LiteralPath $dir)) {
-            Get-ChildItem -LiteralPath $dir -File -Force -ErrorAction SilentlyContinue | ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue }
-        }
+        if (-not $dir -or -not (Test-Path -LiteralPath $dir)) { continue }
+        $safe = $false
+        try { $safe = Test-CVLinkDirSafe $dir } catch { }
+        if (-not $safe) { continue }
+        Get-ChildItem -LiteralPath $dir -File -Force -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match '^[0-9a-f]{32}\.vhdx?$' -and -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) } |
+            ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue }
     }
 }
 
