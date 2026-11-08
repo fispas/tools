@@ -55,7 +55,7 @@
     .\Invoke-WinAuditPro.ps1 -Action Compare -BaselinePath .\a.json -CurrentPath .\b.json
 
 .NOTES
-    Versione : 2.1.0 TS-Edition
+    Versione : 2.1.1 TS-Edition
     Repo     : fispas/tools (rds/winauditpro)
     Richiede : amministratore, PowerShell 5.1+
 #>
@@ -90,7 +90,7 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
 # ==============================================================================
 # CONFIGURAZIONE (salvabile dal pannello)
 # ==============================================================================
-$script:WapVersion       = '2.1.0'
+$script:WapVersion       = '2.1.1'
 $script:WapScriptPath    = $PSCommandPath
 $script:WapDataDir       = Join-Path $env:ProgramData 'FispaTools\WinAuditPro'
 $script:WapDefaultConfig = Join-Path $script:WapDataDir 'config.json'
@@ -4292,18 +4292,22 @@ function Invoke-Optimize {
           check={ -not $reg.ntfsDisable8dot3 }
           script={ Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' NtfsDisable8dot3NameCreation 1 -Type DWord -Force }
           snapshot={ (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -EA SilentlyContinue).NtfsDisable8dot3NameCreation }
-          revert={ param($s) Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' NtfsDisable8dot3NameCreation ([int]$(if($null -ne $s){$s}else{0})) -Type DWord -Force }},
+          revert={ param($s) Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' NtfsDisable8dot3NameCreation ([int]$(if($null -ne $s){$s}else{2})) -Type DWord -Force }},
 
         @{id='DISK_TEMP_CLEANUP'; cat='DISCO'; prio='warn'; reboot=$false
           desc='Pulizia cartelle temporanee (Windows\Temp, SoftwareDistribution\Download)'
           risk='Server: cartelle temp gonfie rallentano la scansione AV e riducono spazio disco. Utente: errori applicativi se il disco si riempie durante la sessione.'
           check={ $null -ne $reg.totalTempGB -and [double]$reg.totalTempGB -gt 1 }
           script={
-            $paths = @("$env:SystemRoot\Temp", "$env:SystemRoot\SoftwareDistribution\Download")
-            foreach ($p in $paths) {
-                if (Test-Path $p) {
-                    Get-ChildItem $p -Recurse -EA SilentlyContinue | Remove-Item -Force -Recurse -EA SilentlyContinue
-                }
+            if (Test-Path "$env:SystemRoot\Temp") { Get-ChildItem "$env:SystemRoot\Temp" -Recurse -EA SilentlyContinue | Remove-Item -Force -Recurse -EA SilentlyContinue }
+            # SoftwareDistribution\Download solo a Windows Update fermo (come indica Microsoft), poi i servizi ripartono come prima
+            $dl = "$env:SystemRoot\SoftwareDistribution\Download"
+            if (Test-Path $dl) {
+                $wu = @(Get-Service wuauserv, bits -EA SilentlyContinue | Where-Object { $_.Status -eq 'Running' })
+                try {
+                    $wu | Stop-Service -Force -EA Stop
+                    Get-ChildItem $dl -Recurse -EA SilentlyContinue | Remove-Item -Force -Recurse -EA SilentlyContinue
+                } catch { } finally { $wu | Start-Service -EA SilentlyContinue }
             }
             # Esegui anche cleanmgr in background
             try { Start-Process cleanmgr -ArgumentList '/sagerun:1' -WindowStyle Hidden -EA SilentlyContinue } catch { }

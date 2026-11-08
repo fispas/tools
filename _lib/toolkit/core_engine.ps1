@@ -319,7 +319,11 @@ public static extern bool GetDiskFreeSpaceEx(string lpDirectoryName, out ulong l
         if ($Config.DryRun) { $mode = 'SIMULAZIONE (nessuna modifica)' }
         if ($Tool.ReadOnly) { $mode = 'SOLA LETTURA' }
         Write-ToolLog ('=== {0} {1} - {2} {3} - {4}' -f $Tool.Title, $Tool.Version, $n, $Tool.ItemNoun, $mode) 'STEP'
-        foreach ($k in @($Config.Keys)) { Write-ToolLog ('  {0} = {1}' -f $k, (@($Config[$k]) -join '; ')) }
+        # configurazione nel log, senza i valori segreti (password, token, chiavi)
+        foreach ($k in @($Config.Keys)) {
+            $v = if ($k -match 'Password|Secret|Token|ApiKey|Credential') { '(nascosto)' } else { (@($Config[$k]) -join '; ') }
+            Write-ToolLog ('  {0} = {1}' -f $k, $v)
+        }
         for ($i = 0; $i -lt $n; $i++) {
             $item = $list[$i]
             if ($State.Cancel) {

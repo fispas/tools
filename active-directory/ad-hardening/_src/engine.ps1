@@ -67,6 +67,10 @@
         $Tool.ReadOnly = [string]$Config.Mode -eq 'Fotografia'
         if ([string]$Config.Mode -eq 'Ripristino' -and -not ($Config.RestoreFolder -and (Test-Path -LiteralPath ([string]$Config.RestoreFolder)))) { $e += 'Ripristino: indicare la cartella di un''esecuzione di hardening (Hardening_<dominio>_<data>).' }
         if ($Config.CompareWith -and -not (Test-Path -LiteralPath ([string]$Config.CompareWith))) { $e += "Fotografia da confrontare non trovata: $($Config.CompareWith)" }
+        # senza interfaccia niente modifiche "di tutto quello che serve": le azioni reali vanno elencate una per una
+        if ($State.Headless -and [string]$Config.Mode -in @('Hardening', 'Ripristino') -and -not $Config.DryRun -and -not $User) {
+            $e += 'Senza interfaccia l''hardening o il ripristino reale richiedono l''elenco esplicito delle azioni (-User HD-MAQ,HD-PRE2K...); per vedere cosa verrebbe fatto usare -Simulate.'
+        }
         try { [void](Get-AdContext $Config) } catch { $e += "Dominio non raggiungibile: $($_.Exception.Message)" }
         if (-not $Scan -and -not $Config.OutputDir) { $e += 'Indicare la cartella dei report.' }
         if ($hard) {

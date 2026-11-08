@@ -61,6 +61,7 @@ I parametri `-OutputPath` e `-CmdletTimeoutSec` sulla riga di comando hanno la p
 - Le ottimizzazioni sono definite in `Invoke-Optimize` (id, categoria, check, script, revert/regs, rischio).
 
 ## Changelog
+- **2.1.1** — pulizia dei temporanei: `SoftwareDistribution\Download` svuotata solo con Windows Update e BITS fermi (poi riavviati); ripristino di `NtfsDisable8dot3NameCreation` al valore predefinito di Windows (2, per volume) quando manca il valore originale.
 - **2.1.0** — importato in `fispas/tools` (era `WinAuditPro_v2.ps1`):
   - **pannello grafico** di avvio con impostazioni salvabili, elenco degli audit, azioni in processo separato con log e annullamento;
   - `-Action` / `-NoGui` per l'uso non interattivo, con codici di uscita; il menu testuale resta con `-Console`;

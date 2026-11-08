@@ -25,7 +25,8 @@
 
 .PARAMETER NoGui
     Esegue senza interfaccia (operazione pianificata): fotografia completa, oppure le azioni di hardening
-    da applicare secondo la configurazione (Mode, DryRun).
+    da applicare secondo la configurazione (Mode, DryRun). In hardening o ripristino reale (DryRun false)
+    serve -User con l'elenco delle azioni: senza elenco lo strumento si ferma.
 
 .PARAMETER User
     Con -NoGui: esegue solo questi controlli o azioni (ID, es. K-ASREP-01 oppure HD-MAQ).
@@ -423,7 +424,11 @@ public static extern bool GetDiskFreeSpaceEx(string lpDirectoryName, out ulong l
         if ($Config.DryRun) { $mode = 'SIMULAZIONE (nessuna modifica)' }
         if ($Tool.ReadOnly) { $mode = 'SOLA LETTURA' }
         Write-ToolLog ('=== {0} {1} - {2} {3} - {4}' -f $Tool.Title, $Tool.Version, $n, $Tool.ItemNoun, $mode) 'STEP'
-        foreach ($k in @($Config.Keys)) { Write-ToolLog ('  {0} = {1}' -f $k, (@($Config[$k]) -join '; ')) }
+        # configurazione nel log, senza i valori segreti (password, token, chiavi)
+        foreach ($k in @($Config.Keys)) {
+            $v = if ($k -match 'Password|Secret|Token|ApiKey|Credential') { '(nascosto)' } else { (@($Config[$k]) -join '; ') }
+            Write-ToolLog ('  {0} = {1}' -f $k, $v)
+        }
         for ($i = 0; $i -lt $n; $i++) {
             $item = $list[$i]
             if ($State.Cancel) {
@@ -558,6 +563,10 @@ public static extern bool GetDiskFreeSpaceEx(string lpDirectoryName, out ulong l
         $Tool.ReadOnly = [string]$Config.Mode -eq 'Fotografia'
         if ([string]$Config.Mode -eq 'Ripristino' -and -not ($Config.RestoreFolder -and (Test-Path -LiteralPath ([string]$Config.RestoreFolder)))) { $e += 'Ripristino: indicare la cartella di un''esecuzione di hardening (Hardening_<dominio>_<data>).' }
         if ($Config.CompareWith -and -not (Test-Path -LiteralPath ([string]$Config.CompareWith))) { $e += "Fotografia da confrontare non trovata: $($Config.CompareWith)" }
+        # senza interfaccia niente modifiche "di tutto quello che serve": le azioni reali vanno elencate una per una
+        if ($State.Headless -and [string]$Config.Mode -in @('Hardening', 'Ripristino') -and -not $Config.DryRun -and -not $User) {
+            $e += 'Senza interfaccia l''hardening o il ripristino reale richiedono l''elenco esplicito delle azioni (-User HD-MAQ,HD-PRE2K...); per vedere cosa verrebbe fatto usare -Simulate.'
+        }
         try { [void](Get-AdContext $Config) } catch { $e += "Dominio non raggiungibile: $($_.Exception.Message)" }
         if (-not $Scan -and -not $Config.OutputDir) { $e += 'Indicare la cartella dei report.' }
         if ($hard) {

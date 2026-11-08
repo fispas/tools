@@ -25,7 +25,8 @@
 
 .PARAMETER NoGui
     Esegue senza interfaccia (operazione pianificata): fotografia completa, oppure le azioni di hardening
-    da applicare secondo la configurazione (Mode, DryRun).
+    da applicare secondo la configurazione (Mode, DryRun). In hardening o ripristino reale (DryRun false)
+    serve -User con l'elenco delle azioni: senza elenco lo strumento si ferma.
 
 .PARAMETER User
     Con -NoGui: esegue solo questi controlli o azioni (ID, es. K-ASREP-01 oppure HD-MAQ).
