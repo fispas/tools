@@ -1,4 +1,4 @@
-
+﻿
 #region CONFIGURAZIONE E INTERFACCIA (libreria _lib/toolkit)
 . $Engine
 
@@ -85,7 +85,69 @@ if ($NoGui) {
 
 # ------------------------------------------------------------------ GUI
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+# testo nitido sugli schermi ad alta densita' (prima di creare qualsiasi finestra)
+try {
+    if (-not ('FispaTools.Dpi' -as [type])) { Add-Type -Namespace FispaTools -Name Dpi -MemberDefinition '[DllImport("user32.dll")] public static extern bool SetProcessDPIAware();' }
+    [void][FispaTools.Dpi]::SetProcessDPIAware()
+} catch { }
 [System.Windows.Forms.Application]::EnableVisualStyles()
+
+# ---------------------------------------------------------- tema grafico (comune a tutti i tool)
+function New-UiColor([string]$Hex) { [System.Drawing.ColorTranslator]::FromHtml($Hex) }
+$Ui = @{
+    Bg = New-UiColor '#F6F7FB'; Surface = New-UiColor '#FFFFFF'; Surface2 = New-UiColor '#F1F4F9'; Border = New-UiColor '#E3E8F0'
+    Text = New-UiColor '#0F172A'; Muted = New-UiColor '#64748B'; Accent = New-UiColor '#2563EB'; AccentDark = New-UiColor '#1D4ED8'; AccentSoft = New-UiColor '#DBEAFE'
+    Header = New-UiColor '#0F172A'; HeaderText = New-UiColor '#F8FAFC'; HeaderMuted = New-UiColor '#94A3B8'
+    Ok = New-UiColor '#16A34A'; OkSoft = New-UiColor '#DCFCE7'; Warn = New-UiColor '#B45309'; WarnSoft = New-UiColor '#FEF3C7'
+    Err = New-UiColor '#DC2626'; ErrSoft = New-UiColor '#FEE2E2'; Sim = New-UiColor '#7C3AED'; SimSoft = New-UiColor '#EDE9FE'
+    Info = New-UiColor '#0E7490'; InfoSoft = New-UiColor '#CFFAFE'; Neutral = New-UiColor '#475569'; NeutralSoft = New-UiColor '#E2E8F0'
+    LogBg = New-UiColor '#0B1020'; LogText = New-UiColor '#CBD5E1'
+}
+$installed = @((New-Object System.Drawing.Text.InstalledFontCollection).Families | ForEach-Object { $_.Name })
+$Ui.FontName = if ($installed -contains 'Segoe UI Variable Text') { 'Segoe UI Variable Text' } else { 'Segoe UI' }
+$Ui.FontSemi = if ($installed -contains 'Segoe UI Variable Display Semib') { 'Segoe UI Variable Display Semib' } elseif ($installed -contains 'Segoe UI Semibold') { 'Segoe UI Semibold' } else { $Ui.FontName }
+$Ui.Font = New-Object System.Drawing.Font($Ui.FontName, 9.5)
+$Ui.FontBold = New-Object System.Drawing.Font($Ui.FontSemi, 9.5)
+$Ui.MonoName = if ($installed -contains 'Cascadia Mono') { 'Cascadia Mono' } else { 'Consolas' }
+
+# Pulsanti piatti: Primary (azione principale), Secondary, Danger
+function Set-UiButton($Button, [string]$Kind = 'Secondary') {
+    $Button.FlatStyle = 'Flat'
+    $Button.Cursor = [System.Windows.Forms.Cursors]::Hand
+    $Button.Font = $Ui.FontBold
+    $Button.Padding = New-Object System.Windows.Forms.Padding(10, 2, 10, 2)
+    $Button.Margin = New-Object System.Windows.Forms.Padding(4, 3, 4, 3)
+    if ($Button.Height -lt 32) { $Button.Height = 32 }
+    $Button.UseVisualStyleBackColor = $false
+    switch ($Kind) {
+        'Primary' { $Button.BackColor = $Ui.Accent; $Button.ForeColor = [System.Drawing.Color]::White; $Button.FlatAppearance.BorderSize = 0; $Button.FlatAppearance.MouseOverBackColor = $Ui.AccentDark; $Button.FlatAppearance.MouseDownBackColor = $Ui.AccentDark }
+        'Danger' { $Button.BackColor = $Ui.Surface; $Button.ForeColor = $Ui.Err; $Button.FlatAppearance.BorderColor = $Ui.ErrSoft; $Button.FlatAppearance.BorderSize = 1; $Button.FlatAppearance.MouseOverBackColor = $Ui.ErrSoft }
+        default { $Button.BackColor = $Ui.Surface; $Button.ForeColor = $Ui.Text; $Button.FlatAppearance.BorderColor = $Ui.Border; $Button.FlatAppearance.BorderSize = 1; $Button.FlatAppearance.MouseOverBackColor = $Ui.Surface2 }
+    }
+}
+
+# Colori della pillola di un esito
+function Get-UiTone([string]$Status) {
+    switch -Regex ($Status) {
+        '^(OK|Conforme)' { return @($Ui.OkSoft, $Ui.Ok) }
+        '^(Attenzione|Saltato|Da applicare)' { return @($Ui.WarnSoft, $Ui.Warn) }
+        '^(Fallito|Critico)' { return @($Ui.ErrSoft, $Ui.Err) }
+        '^(Simulato)' { return @($Ui.SimSoft, $Ui.Sim) }
+        '^(Info|Pronto|In corso)' { return @($Ui.InfoSoft, $Ui.Info) }
+        default { return @($Ui.NeutralSoft, $Ui.Neutral) }
+    }
+}
+
+function New-UiRoundPath([System.Drawing.Rectangle]$R, [int]$Radius) {
+    $p = New-Object System.Drawing.Drawing2D.GraphicsPath
+    $d = $Radius * 2
+    $p.AddArc($R.X, $R.Y, $d, $d, 180, 90)
+    $p.AddArc($R.Right - $d, $R.Y, $d, $d, 270, 90)
+    $p.AddArc($R.Right - $d, $R.Bottom - $d, $d, $d, 0, 90)
+    $p.AddArc($R.X, $R.Bottom - $d, $d, $d, 90, 90)
+    $p.CloseFigure()
+    $p
+}
 
 function Show-Err([string]$m) { [void][System.Windows.Forms.MessageBox]::Show($m, $Tool.Title, 'OK', 'Error') }
 function Show-Info([string]$m) { [void][System.Windows.Forms.MessageBox]::Show($m, $Tool.Title, 'OK', 'Information') }
@@ -109,10 +171,87 @@ $form.Text = '{0} {1}' -f $Tool.Title, $Tool.Version
 $form.Size = New-Object System.Drawing.Size(1150, 780)
 $form.MinimumSize = New-Object System.Drawing.Size(900, 600)
 $form.StartPosition = 'CenterScreen'
-$form.Font = New-Object System.Drawing.Font('Segoe UI', 9)
+$form.Font = $Ui.Font
+$form.BackColor = $Ui.Bg
+$form.ForeColor = $Ui.Text
+
+# intestazione: titolo, versione, computer, modalita'
+$header = New-Object System.Windows.Forms.Panel
+$header.Dock = 'Top'
+$header.Height = 68
+$header.BackColor = $Ui.Header
+$hdrBadge = New-Object System.Windows.Forms.Label
+$hdrBadge.Text = (($Tool.Name -creplace '[^A-Z]', '') + 'FT').Substring(0, 2)
+$hdrBadge.Size = New-Object System.Drawing.Size(40, 40)
+$hdrBadge.Location = New-Object System.Drawing.Point(20, 14)
+$hdrBadge.TextAlign = 'MiddleCenter'
+$hdrBadge.BackColor = $Ui.Accent
+$hdrBadge.ForeColor = [System.Drawing.Color]::White
+$hdrBadge.Font = New-Object System.Drawing.Font($Ui.FontSemi, 11)
+$hdrTitle = New-Object System.Windows.Forms.Label
+$hdrTitle.Text = $Tool.Title
+$hdrTitle.AutoSize = $true
+$hdrTitle.Location = New-Object System.Drawing.Point(72, 12)
+$hdrTitle.ForeColor = $Ui.HeaderText
+$hdrTitle.Font = New-Object System.Drawing.Font($Ui.FontSemi, 14)
+$hdrSub = New-Object System.Windows.Forms.Label
+$hdrSub.Text = 'Versione {0}  -  {1}  -  {2}\{3}' -f $Tool.Version, $env:COMPUTERNAME, $env:USERDOMAIN, $env:USERNAME
+$hdrSub.AutoSize = $true
+$hdrSub.Location = New-Object System.Drawing.Point(74, 40)
+$hdrSub.ForeColor = $Ui.HeaderMuted
+$hdrMode = New-Object System.Windows.Forms.Label
+$hdrMode.AutoSize = $false
+$hdrMode.Size = New-Object System.Drawing.Size(210, 28)
+$hdrMode.Anchor = 'Top, Right'
+$hdrMode.TextAlign = 'MiddleCenter'
+$hdrMode.Font = $Ui.FontBold
+$header.Controls.AddRange(@($hdrBadge, $hdrTitle, $hdrSub, $hdrMode))
+$header.Add_Resize({ $hdrMode.Location = New-Object System.Drawing.Point(($header.Width - $hdrMode.Width - 20), 20) })
+$hdrBadge.Add_Paint({
+    param($s, $e)
+    $e.Graphics.SmoothingMode = 'AntiAlias'
+    $e.Graphics.Clear($Ui.Header)
+    $path = New-UiRoundPath (New-Object System.Drawing.Rectangle(0, 0, ($s.Width - 1), ($s.Height - 1))) 10
+    $brush = New-Object System.Drawing.SolidBrush($Ui.Accent)
+    $e.Graphics.FillPath($brush, $path)
+    [System.Windows.Forms.TextRenderer]::DrawText($e.Graphics, $s.Text, $s.Font, $s.ClientRectangle, [System.Drawing.Color]::White, [System.Windows.Forms.TextFormatFlags]'HorizontalCenter, VerticalCenter')
+    $brush.Dispose(); $path.Dispose()
+})
+
+# chip della modalita': sola lettura, simulazione o esecuzione reale
+function Update-ModeChip($Cfg) {
+    $txt = 'ESECUZIONE REALE'; $bg = $Ui.Err; $fg = [System.Drawing.Color]::White
+    if ($Cfg -and $Cfg.Contains('DryRun') -and $Cfg.DryRun) { $txt = 'SIMULAZIONE'; $bg = $Ui.Sim }
+    if ($Tool.ReadOnly) { $txt = 'SOLA LETTURA'; $bg = $Ui.Ok }
+    $hdrMode.Text = $txt; $hdrMode.BackColor = $bg; $hdrMode.ForeColor = $fg
+}
 
 $tabs = New-Object System.Windows.Forms.TabControl
 $tabs.Dock = 'Fill'
+$tabs.DrawMode = 'OwnerDrawFixed'
+$tabs.SizeMode = 'Fixed'
+$tabs.ItemSize = New-Object System.Drawing.Size(170, 38)
+$tabs.Padding = New-Object System.Drawing.Point(18, 6)
+$tabs.Add_DrawItem({
+    param($s, $e)
+    $g = $e.Graphics
+    $g.SmoothingMode = 'AntiAlias'
+    $r = $s.GetTabRect($e.Index)
+    $sel = $e.Index -eq $s.SelectedIndex
+    $bgBrush = New-Object System.Drawing.SolidBrush($Ui.Bg)
+    $g.FillRectangle($bgBrush, (New-Object System.Drawing.Rectangle(($r.X - 2), ($r.Y - 2), ($r.Width + 4), ($r.Height + 4))))
+    $fg = $Ui.Muted
+    if ($sel) {
+        $fg = $Ui.Accent
+        $lineBrush = New-Object System.Drawing.SolidBrush($Ui.Accent)
+        $g.FillRectangle($lineBrush, (New-Object System.Drawing.Rectangle(($r.X + 14), ($r.Bottom - 3), ($r.Width - 28), 3)))
+        $lineBrush.Dispose()
+    }
+    $font = $Ui.Font
+    if ($sel) { $font = $Ui.FontBold }
+    [System.Windows.Forms.TextRenderer]::DrawText($g, $s.TabPages[$e.Index].Text, $font, $r, $fg, [System.Windows.Forms.TextFormatFlags]'HorizontalCenter, VerticalCenter')
+    $bgBrush.Dispose()
+})
 $tabCfg = New-Object System.Windows.Forms.TabPage('Configurazione')
 $tabPro = New-Object System.Windows.Forms.TabPage($Tool.ItemTab)
 $tabLog = New-Object System.Windows.Forms.TabPage('Log')
@@ -123,7 +262,8 @@ $tlp = New-Object System.Windows.Forms.TableLayoutPanel
 $tlp.Dock = 'Fill'
 $tlp.AutoScroll = $true
 $tlp.ColumnCount = 3
-$tlp.Padding = New-Object System.Windows.Forms.Padding(12, 8, 12, 8)
+$tlp.Padding = New-Object System.Windows.Forms.Padding(24, 8, 24, 16)
+$tlp.BackColor = $Ui.Surface
 [void]$tlp.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::AutoSize)))
 [void]$tlp.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 100)))
 [void]$tlp.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::AutoSize)))
@@ -135,8 +275,10 @@ foreach ($f in $ToolSchema) {
         $sec = New-Object System.Windows.Forms.Label
         $sec.Text = $f.Label
         $sec.AutoSize = $true
-        $sec.Font = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
-        $sec.Margin = New-Object System.Windows.Forms.Padding(0, 14, 0, 4)
+        $sec.Text = $f.Label.ToUpperInvariant()
+        $sec.Font = New-Object System.Drawing.Font($Ui.FontSemi, 9)
+        $sec.ForeColor = $Ui.Accent
+        $sec.Margin = New-Object System.Windows.Forms.Padding(0, 22, 0, 6)
         $tlp.Controls.Add($sec, 0, $row)
         $tlp.SetColumnSpan($sec, 3)
         $row++
@@ -202,7 +344,8 @@ foreach ($f in $ToolSchema) {
         $h.Text = $f.Help
         $h.AutoSize = $true
         $h.MaximumSize = New-Object System.Drawing.Size(760, 0)
-        $h.ForeColor = [System.Drawing.Color]::DimGray
+        $h.ForeColor = $Ui.Muted
+        $h.Font = New-Object System.Drawing.Font($Ui.FontName, 8.5)
         $h.Margin = New-Object System.Windows.Forms.Padding(3, 0, 3, 6)
         $tlp.Controls.Add($h, 1, $row)
         $tlp.SetColumnSpan($h, 2)
@@ -246,7 +389,8 @@ function Get-ConfigFromForm {
 $cfgBar = New-Object System.Windows.Forms.FlowLayoutPanel
 $cfgBar.Dock = 'Bottom'
 $cfgBar.AutoSize = $true
-$cfgBar.Padding = New-Object System.Windows.Forms.Padding(8)
+$cfgBar.Padding = New-Object System.Windows.Forms.Padding(14, 10, 14, 10)
+$cfgBar.BackColor = $Ui.Bg
 $btnSave = New-Object System.Windows.Forms.Button; $btnSave.Text = 'Salva'; $btnSave.AutoSize = $true
 $btnSaveAs = New-Object System.Windows.Forms.Button; $btnSaveAs.Text = 'Salva come...'; $btnSaveAs.AutoSize = $true
 $btnLoad = New-Object System.Windows.Forms.Button; $btnLoad.Text = 'Carica...'; $btnLoad.AutoSize = $true
@@ -288,12 +432,13 @@ $btnDefaults.Add_Click({ if (Confirm-UI 'Ripristinare i valori predefiniti? Le m
 $proBar = New-Object System.Windows.Forms.FlowLayoutPanel
 $proBar.Dock = 'Top'
 $proBar.AutoSize = $true
-$proBar.Padding = New-Object System.Windows.Forms.Padding(6)
+$proBar.Padding = New-Object System.Windows.Forms.Padding(14, 10, 14, 10)
+$proBar.BackColor = $Ui.Bg
 $btnScan = New-Object System.Windows.Forms.Button; $btnScan.Text = 'Analizza'; $btnScan.AutoSize = $true
 $btnAll = New-Object System.Windows.Forms.Button; $btnAll.Text = 'Seleziona tutti'; $btnAll.AutoSize = $true
 $btnNone = New-Object System.Windows.Forms.Button; $btnNone.Text = 'Nessuno'; $btnNone.AutoSize = $true
 $lblFilter = New-Object System.Windows.Forms.Label; $lblFilter.Text = 'Filtro:'; $lblFilter.AutoSize = $true; $lblFilter.Margin = New-Object System.Windows.Forms.Padding(16, 8, 3, 3)
-$txtFilter = New-Object System.Windows.Forms.TextBox; $txtFilter.Width = 220
+$txtFilter = New-Object System.Windows.Forms.TextBox; $txtFilter.Width = 260; $txtFilter.Margin = New-Object System.Windows.Forms.Padding(3, 7, 3, 3)
 $lblCount = New-Object System.Windows.Forms.Label; $lblCount.AutoSize = $true; $lblCount.Margin = New-Object System.Windows.Forms.Padding(16, 8, 3, 3)
 $proBar.Controls.AddRange(@($btnScan, $btnAll, $btnNone, $lblFilter, $txtFilter, $lblCount))
 
@@ -305,7 +450,47 @@ $grid.AllowUserToResizeRows = $false
 $grid.RowHeadersVisible = $false
 $grid.SelectionMode = 'FullRowSelect'
 $grid.AutoSizeColumnsMode = 'Fill'
-$grid.BackgroundColor = [System.Drawing.Color]::White
+$grid.BackgroundColor = $Ui.Surface
+$grid.BorderStyle = 'None'
+$grid.CellBorderStyle = 'SingleHorizontal'
+$grid.GridColor = $Ui.Border
+$grid.EnableHeadersVisualStyles = $false
+$grid.ColumnHeadersBorderStyle = 'None'
+$grid.ColumnHeadersHeightSizeMode = 'DisableResizing'
+$grid.ColumnHeadersHeight = 38
+$grid.ColumnHeadersDefaultCellStyle.BackColor = $Ui.Surface2
+$grid.ColumnHeadersDefaultCellStyle.ForeColor = $Ui.Muted
+$grid.ColumnHeadersDefaultCellStyle.Font = $Ui.FontBold
+$grid.ColumnHeadersDefaultCellStyle.SelectionBackColor = $Ui.Surface2
+$grid.ColumnHeadersDefaultCellStyle.Padding = New-Object System.Windows.Forms.Padding(8, 0, 8, 0)
+$grid.RowTemplate.Height = 32
+$grid.DefaultCellStyle.Padding = New-Object System.Windows.Forms.Padding(8, 0, 8, 0)
+$grid.DefaultCellStyle.SelectionBackColor = $Ui.AccentSoft
+$grid.DefaultCellStyle.SelectionForeColor = $Ui.Text
+$grid.DefaultCellStyle.ForeColor = $Ui.Text
+$grid.AlternatingRowsDefaultCellStyle.BackColor = New-UiColor '#FAFBFD'
+# esito come pillola colorata
+$grid.Add_CellPainting({
+    param($s, $e)
+    if ($e.RowIndex -lt 0 -or $e.ColumnIndex -lt 0) { return }
+    if ($s.Columns[$e.ColumnIndex].Name -ne 'Esito') { return }
+    $v = [string]$e.Value
+    $e.PaintBackground($e.CellBounds, $true)
+    if ($v) {
+        $g = $e.Graphics
+        $g.SmoothingMode = 'AntiAlias'
+        $tone = Get-UiTone $v
+        $sz = [System.Windows.Forms.TextRenderer]::MeasureText($v, $Ui.FontBold)
+        $w = [math]::Min($e.CellBounds.Width - 12, $sz.Width + 18)
+        $rect = New-Object System.Drawing.Rectangle(($e.CellBounds.X + 8), ($e.CellBounds.Y + [int](($e.CellBounds.Height - 22) / 2)), $w, 22)
+        $path = New-UiRoundPath $rect 11
+        $b = New-Object System.Drawing.SolidBrush($tone[0])
+        $g.FillPath($b, $path)
+        [System.Windows.Forms.TextRenderer]::DrawText($g, $v, $Ui.FontBold, $rect, $tone[1], [System.Windows.Forms.TextFormatFlags]'HorizontalCenter, VerticalCenter, EndEllipsis')
+        $b.Dispose(); $path.Dispose()
+    }
+    $e.Handled = $true
+})
 $colSel = New-Object System.Windows.Forms.DataGridViewCheckBoxColumn
 $colSel.Name = 'Sel'; $colSel.HeaderText = ''; $colSel.Width = 32; $colSel.AutoSizeMode = 'None'
 [void]$grid.Columns.Add($colSel)
@@ -339,9 +524,9 @@ function Show-Items($Items) {
         $r.Tag = $it
         if (-not $it.Selectable) {
             $r.Cells['Sel'].ReadOnly = $true
-            $r.DefaultCellStyle.ForeColor = [System.Drawing.Color]::Gray
+            $r.DefaultCellStyle.ForeColor = $Ui.Muted
         } elseif ($it.Stato -ne 'Pronto') {
-            $r.DefaultCellStyle.ForeColor = [System.Drawing.Color]::DarkOrange
+            $r.DefaultCellStyle.ForeColor = $Ui.Warn
         }
     }
     Update-Count
@@ -390,17 +575,19 @@ $logBox = New-Object System.Windows.Forms.RichTextBox
 $logBox.Dock = 'Fill'
 $logBox.ReadOnly = $true
 $logBox.WordWrap = $false
-$logBox.BackColor = [System.Drawing.Color]::White
-$logBox.Font = New-Object System.Drawing.Font('Consolas', 9)
+$logBox.BackColor = $Ui.LogBg
+$logBox.ForeColor = $Ui.LogText
+$logBox.BorderStyle = 'None'
+$logBox.Font = New-Object System.Drawing.Font($Ui.MonoName, 9.5)
 $tabLog.Controls.Add($logBox)
 
 function Add-LogLine([string]$Text, [string]$Level) {
     $color = switch ($Level) {
-        'OK' { [System.Drawing.Color]::DarkGreen }
-        'WARN' { [System.Drawing.Color]::DarkOrange }
-        'ERROR' { [System.Drawing.Color]::Firebrick }
-        'STEP' { [System.Drawing.Color]::RoyalBlue }
-        default { [System.Drawing.Color]::Black }
+        'OK' { New-UiColor '#4ADE80' }
+        'WARN' { New-UiColor '#FBBF24' }
+        'ERROR' { New-UiColor '#F87171' }
+        'STEP' { New-UiColor '#60A5FA' }
+        default { $Ui.LogText }
     }
     $logBox.SelectionStart = $logBox.TextLength
     $logBox.SelectionLength = 0
@@ -413,18 +600,32 @@ function Add-LogLine([string]$Text, [string]$Level) {
 # ---------------------------------------------------------- barra inferiore
 $bottom = New-Object System.Windows.Forms.Panel
 $bottom.Dock = 'Bottom'
-$bottom.Height = 74
-$prog = New-Object System.Windows.Forms.ProgressBar
+$bottom.Height = 64
+$bottom.BackColor = $Ui.Surface
+# barra di avanzamento sottile (stessa interfaccia Maximum/Value di una ProgressBar)
+$prog = New-Object System.Windows.Forms.Panel
 $prog.Dock = 'Top'
-$prog.Height = 16
+$prog.Height = 4
+$prog.BackColor = $Ui.Border
+$progFill = New-Object System.Windows.Forms.Panel
+$progFill.Dock = 'Left'
+$progFill.Width = 0
+$progFill.BackColor = $Ui.Accent
+$prog.Controls.Add($progFill)
+$script:ProgMax = 1
+function Set-UiProgress([int]$Value, [int]$Max) {
+    $script:ProgMax = [math]::Max(1, $Max)
+    $v = [math]::Max(0, [math]::Min($Value, $script:ProgMax))
+    $progFill.Width = [int]($prog.Width * $v / $script:ProgMax)
+}
 $runBar = New-Object System.Windows.Forms.FlowLayoutPanel
 $runBar.Dock = 'Fill'
-$runBar.Padding = New-Object System.Windows.Forms.Padding(6, 6, 6, 0)
+$runBar.Padding = New-Object System.Windows.Forms.Padding(14, 10, 14, 0)
 $btnStart = New-Object System.Windows.Forms.Button; $btnStart.Text = $Tool.StartLabel; $btnStart.Width = 160; $btnStart.Height = 30
 $btnStart.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
 $btnCancel = New-Object System.Windows.Forms.Button; $btnCancel.Text = 'Annulla'; $btnCancel.Width = 100; $btnCancel.Height = 30; $btnCancel.Enabled = $false
 $btnOpenLog = New-Object System.Windows.Forms.Button; $btnOpenLog.Text = 'Cartella log e report'; $btnOpenLog.AutoSize = $true; $btnOpenLog.Height = 30
-$lblStatus = New-Object System.Windows.Forms.Label; $lblStatus.AutoSize = $true; $lblStatus.Margin = New-Object System.Windows.Forms.Padding(12, 9, 3, 3); $lblStatus.Text = 'Pronto.'
+$lblStatus = New-Object System.Windows.Forms.Label; $lblStatus.AutoSize = $true; $lblStatus.Margin = New-Object System.Windows.Forms.Padding(12, 11, 3, 3); $lblStatus.Text = 'Pronto.'; $lblStatus.ForeColor = $Ui.Muted
 $runBar.Controls.AddRange(@($btnStart, $btnCancel, $btnOpenLog, $lblStatus))
 $bottom.Controls.Add($runBar)
 $bottom.Controls.Add($prog)
@@ -432,7 +633,24 @@ $runBar.BringToFront()
 
 $form.Controls.Add($tabs)
 $form.Controls.Add($bottom)
+$form.Controls.Add($header)
 $tabs.BringToFront()
+foreach ($tp in @($tabCfg, $tabPro, $tabLog)) { $tp.BackColor = $Ui.Bg; $tp.Padding = New-Object System.Windows.Forms.Padding(0) }
+
+# stile dei pulsanti
+Set-UiButton $btnStart 'Primary'
+Set-UiButton $btnScan 'Primary'
+Set-UiButton $btnCancel 'Danger'
+foreach ($b in @($btnOpenLog, $btnAll, $btnNone, $btnSave, $btnSaveAs, $btnLoad, $btnDefaults)) { Set-UiButton $b }
+foreach ($c in $tlp.Controls) {
+    if ($c -is [System.Windows.Forms.Button]) { Set-UiButton $c }
+    elseif ($c -is [System.Windows.Forms.TextBox]) { $c.BorderStyle = 'FixedSingle' }
+}
+$lblCfg.ForeColor = $Ui.Muted
+$lblCount.ForeColor = $Ui.Muted
+# il chip della modalita' segue la casella Simulazione
+if ($Ctl.ContainsKey('DryRun')) { $Ctl['DryRun'].Add_CheckedChanged({ Update-ModeChip (Get-ConfigFromForm) }) }
+if ($Ctl.ContainsKey('Mode')) { $Ctl['Mode'].Add_SelectedIndexChanged({ $c = Get-ConfigFromForm; [void](Test-ToolConfig $c -Scan); Update-ModeChip $c }) }
 
 function Set-Running([bool]$On) {
     $script:Running = $On
@@ -447,23 +665,13 @@ function Receive-ToolMessage($Msg) {
     switch ($Msg.T) {
         'log' { Add-LogLine $Msg.M $Msg.L }
         'prog' {
-            $prog.Maximum = [math]::Max(1, [int]$Msg.N)
-            $prog.Value = [math]::Min([int]$Msg.C, $prog.Maximum)
+            Set-UiProgress ([int]$Msg.C) ([int]$Msg.N)
             $lblStatus.Text = "In corso: $($Msg.M)"
         }
         'row' {
             foreach ($r in $grid.Rows) {
                 if ($r.Tag.Key -eq $Msg.K) {
                     $r.Cells['Esito'].Value = $Msg.E
-                    $r.Cells['Esito'].Style.ForeColor = switch ($Msg.E) {
-                        'OK' { [System.Drawing.Color]::DarkGreen }
-                        'Fallito' { [System.Drawing.Color]::Firebrick }
-                        'Critico' { [System.Drawing.Color]::Firebrick }
-                        'Saltato' { [System.Drawing.Color]::DarkOrange }
-                        'Attenzione' { [System.Drawing.Color]::DarkOrange }
-                        'Simulato' { [System.Drawing.Color]::RoyalBlue }
-                        default { [System.Drawing.Color]::Gray }
-                    }
                     break
                 }
             }
@@ -485,7 +693,7 @@ function Complete-Run {
     try { $script:PS.Dispose(); $script:Runspace.Close(); $script:Runspace.Dispose() } catch { }
     Receive-AllMessages
     Set-Running $false
-    $prog.Value = $prog.Maximum
+    Set-UiProgress $script:ProgMax $script:ProgMax
     if ($script:LastDone) {
         $lblStatus.Text = $script:LastDone.S
         if (-not $script:CloseWhenDone) {
@@ -519,6 +727,7 @@ $btnStart.Add_Click({
     $msg = "$($Tool.ItemTab) da elaborare: $($items.Count)`n"
     foreach ($k in $Tool.ConfirmKeys) { $msg += "$k : $(@($cfg[$k]) -join '; ')`n" }
     $msg += "`nModalita': $mode`n`nProcedere?"
+    Update-ModeChip $cfg
     if (-not (Confirm-UI $msg)) { return }
     Initialize-ToolLog $cfg
     $State.Cancel = $false
@@ -562,6 +771,8 @@ $form.Add_FormClosing({
 
 $form.Add_Shown({
     Set-FormFromConfig $Config
+    Update-ModeChip $Config
+    $hdrMode.Location = New-Object System.Drawing.Point(($header.Width - $hdrMode.Width - 20), 20)
     Update-CfgLabel
     Update-Count
     Write-ToolLog ('{0} {1} su {2} - log: {3}' -f $Tool.Title, $Tool.Version, $env:COMPUTERNAME, $State.LogFile) 'STEP'

@@ -176,7 +176,8 @@ function Get-InUseReason([string]$File) {
 }
 
 function Get-VhdxFiles([string]$Root) {
-    @(Get-ChildItem -LiteralPath $Root -Recurse -File -Force -ErrorAction SilentlyContinue | Where-Object { $_.Extension -match '^\.vhdx?$' })
+    # esclusi gli hard link temporanei della cartella CompactVHDX.tmp (stesso file, altro nome)
+    @(Get-ChildItem -LiteralPath $Root -Recurse -File -Force -ErrorAction SilentlyContinue | Where-Object { $_.Extension -match '^\.vhdx?$' -and -not $_.DirectoryName.EndsWith('\CompactVHDX.tmp', [StringComparison]::OrdinalIgnoreCase) })
 }
 
 $stoppedByTime = $false
@@ -195,6 +196,25 @@ try {
         foreach ($m in (Dismount-CVLeftovers $Paths)) {
             Write-Issue $(if ($m -like 'ERRORE*') { 'ERRORE' } else { 'AVVISO' }) "Pulizia iniziale (disco rimasto agganciato da un'esecuzione interrotta) - $m"
         }
+        Remove-CVStaleLinks $Paths
+    }
+
+    # sessioni RDS: chi ha una sessione aperta (anche disconnessa) potrebbe riagganciare il profilo durante la compattazione
+    $sessionHosts = @()
+    $script:Sessions = $null
+    if ($cfg.SkipActiveSessions) {
+        $sessionHosts = @(Get-CVSessionHosts $cfg)
+        if ($sessionHosts.Count) { Log "Controllo sessioni RDS attivo su: $($sessionHosts -join ', ')" }
+        else { Write-Issue AVVISO 'Controllo delle sessioni RDS non attivo: nessun session host indicato nelle impostazioni ne'' rilevabile dal Connection Broker.' -RunOnly }
+    }
+    function Test-UserSession([string]$Name, [switch]$Fresh) {
+        if (-not $sessionHosts.Count) { return $false }
+        if ($Fresh -or -not $script:Sessions -or ((Get-Date) - $script:Sessions.When).TotalSeconds -gt 60) {
+            $script:Sessions = Get-CVSessionUsers $sessionHosts
+            foreach ($e in $script:Sessions.Errors) { if (-not $script:SessionErrLogged) { Write-Issue AVVISO "Sessioni RDS non leggibili da $e" -RunOnly } }
+            if ($script:Sessions.Errors.Count) { $script:SessionErrLogged = $true }
+        }
+        $script:Sessions.Users.Contains($Name)
     }
 
     $volBefore = Get-CVVolumeInfo $Paths
@@ -257,10 +277,17 @@ try {
                 Log "${tag}: escluso da configurazione"
                 $results.Add([pscustomobject]$row); continue
             }
-            if ($f.FullName -match '[^\x20-\x7E]') {
-                $row.Esito = 'SALTATO: caratteri non ASCII nel percorso'
+            $diskType = Get-CVDiskType $f.FullName
+            if ($diskType -in @('Fisso', 'Differenziale')) {
+                $row.Esito = "SALTATO: disco $($diskType.ToLower()) (la compattazione non riduce questo tipo di disco)"
                 $cnt.Skipped++
-                Write-Issue AVVISO "${tag}: $($row.Esito)" -RunOnly
+                Log "${tag}: $($row.Esito)"
+                $results.Add([pscustomobject]$row); continue
+            }
+            if (Test-UserSession $userName) {
+                $row.Esito = 'SALTATO: utente con sessione RDS aperta'
+                $cnt.Skipped++
+                Log "${tag}: $($row.Esito)"
                 $results.Add([pscustomobject]$row); continue
             }
             $reason = Get-InUseReason $f.FullName
@@ -276,32 +303,45 @@ try {
                 $results.Add([pscustomobject]$row); continue
             }
 
+            # percorso con caratteri non ASCII: diskpart lavora su un hard link temporaneo con nome ASCII (stesso file)
+            $target = $f.FullName
+            $link = $null
+            if ($target -match '[^\x20-\x7E]') {
+                try { $link = New-CVAsciiLink $target; $target = $link; Log "${tag}: percorso non ASCII, uso l'hard link temporaneo $link" }
+                catch {
+                    $row.Esito = "SALTATO: percorso non ASCII ($($_.Exception.Message))"
+                    $cnt.Skipped++
+                    Write-Issue AVVISO "${tag}: $($row.Esito)" -RunOnly
+                    $results.Add([pscustomobject]$row); continue
+                }
+            }
             Log "${tag}: compattazione in corso ($($row.BeforeMB) MB)..."
             $sw = [Diagnostics.Stopwatch]::StartNew()
-            $r = Invoke-Diskpart @(
-                "select vdisk file=`"$($f.FullName)`""
-                'attach vdisk readonly'
-                'compact vdisk'
-                'detach vdisk'
-            )
-            $sw.Stop()
+            try {
+                $r = Invoke-Diskpart @(
+                    "select vdisk file=`"$target`""
+                    'attach vdisk readonly'
+                    'compact vdisk'
+                    'detach vdisk'
+                )
+            } finally { $sw.Stop() }
             $row.DurataSec = [math]::Round($sw.Elapsed.TotalSeconds, 1)
 
             if ($r.Code -ne 0) {
                 $row.Esito = "ERRORE diskpart (codice $($r.Code))"
                 Write-Issue ERRORE "${tag}: diskpart ha restituito il codice $($r.Code). Output: $($r.Output)"
-                $img = if ($script:HasDiskImage) { Get-DiskImage -ImagePath $f.FullName -ErrorAction SilentlyContinue } else { $null }
+                $img = if ($script:HasDiskImage) { Get-DiskImage -ImagePath $target -ErrorAction SilentlyContinue } else { $null }
                 if ($img -and $img.Attached) {
-                    Invoke-Diskpart @("select vdisk file=`"$($f.FullName)`"", 'detach vdisk') | Out-Null
+                    Invoke-Diskpart @("select vdisk file=`"$target`"", 'detach vdisk') | Out-Null
                     Write-Issue AVVISO "${tag}: eseguito detach di sicurezza dopo l'errore di diskpart"
                 }
             } else {
                 $row.Esito = 'OK'
                 # verifica: il disco non deve restare agganciato al server dopo il detach
-                $img = if ($script:HasDiskImage) { Get-DiskImage -ImagePath $f.FullName -ErrorAction SilentlyContinue } else { $null }
+                $img = if ($script:HasDiskImage) { Get-DiskImage -ImagePath $target -ErrorAction SilentlyContinue } else { $null }
                 if ($img -and $img.Attached) {
-                    $d = Invoke-Diskpart @("select vdisk file=`"$($f.FullName)`"", 'detach vdisk')
-                    $img = Get-DiskImage -ImagePath $f.FullName -ErrorAction SilentlyContinue
+                    $d = Invoke-Diskpart @("select vdisk file=`"$target`"", 'detach vdisk')
+                    $img = Get-DiskImage -ImagePath $target -ErrorAction SilentlyContinue
                     if ($img -and $img.Attached) {
                         $row.Esito = 'ERRORE: disco rimasto agganciato dopo la compattazione'
                         Write-Issue ERRORE "${tag}: il disco e' rimasto agganciato e il detach di sicurezza non e' riuscito (codice $($d.Code)). L'utente non potra' accedere finche' non viene sganciato."
@@ -311,6 +351,10 @@ try {
                 }
             }
 
+            if ($link) { Remove-Item -LiteralPath $link -Force -ErrorAction SilentlyContinue; $link = $null }
+            if ((Test-UserSession $userName -Fresh)) {
+                Write-Issue AVVISO "${tag}: l'utente $userName ha aperto una sessione durante la compattazione: verificare che il profilo sia stato caricato correttamente" -RunOnly
+            }
             $row.AfterMB = [math]::Round((Get-Item -LiteralPath $f.FullName -Force).Length / 1MB)
             $row.SavedMB = $row.BeforeMB - $row.AfterMB
             if ($row.Esito -eq 'OK') { $cnt.Ok++; $cnt.SavedMB += $row.SavedMB } else { $cnt.Errors++ }
@@ -321,13 +365,17 @@ try {
             $err = $_
             $cnt.Errors++
             Write-Issue ERRORE "${tag}: errore imprevisto durante l'elaborazione del disco" $err
+            $tp = $f.FullName
+            if ($link) { $tp = $link }
             try {
-                $img = if ($script:HasDiskImage) { Get-DiskImage -ImagePath $f.FullName -ErrorAction Stop } else { $null }
+                $img = if ($script:HasDiskImage) { Get-DiskImage -ImagePath $tp -ErrorAction Stop } else { $null }
                 if ($img -and $img.Attached) {
-                    Invoke-Diskpart @("select vdisk file=`"$($f.FullName)`"", 'detach vdisk') | Out-Null
+                    Invoke-Diskpart @("select vdisk file=`"$tp`"", 'detach vdisk') | Out-Null
                     Write-Issue AVVISO "${tag}: eseguito detach di sicurezza dopo l'errore"
                 }
             } catch { }
+            # l'hard link si elimina solo dopo lo sgancio
+            if ($link) { Remove-Item -LiteralPath $link -Force -ErrorAction SilentlyContinue; $link = $null }
             if (-not $row) {
                 $row = [ordered]@{ Utente = (Get-CVUserFromFolder $f.Directory.Name); Tipo = (Get-CVDiskKind $f.Name); File = $f.FullName; BeforeMB = [math]::Round($f.Length / 1MB); AfterMB = $null; SavedMB = $null; Esito = ''; DurataSec = $null }
             }

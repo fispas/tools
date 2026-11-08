@@ -122,6 +122,12 @@ lavorazione resterebbe agganciato al server e l'utente non potrebbe accedere. Us
 | `CompactVHDX-Setup.ps1` | Installatore autonomo **generato**: contiene gli altri script in base64. Dopo ogni modifica ai sorgenti va rigenerato con `Build-CompactVHDXExe.ps1 -SetupOnly` |
 
 ## Changelog
+- **2.2.0** — limiti noti risolti e nuova grafica:
+  - **sessioni RDS**: prima di ogni disco si interrogano i session host (WTS) e si saltano gli utenti con una sessione aperta o disconnessa; dopo la compattazione si ricontrolla e si avvisa se l'utente è entrato nel frattempo. Session host indicati nelle impostazioni o rilevati dal Connection Broker; pulsante *Verifica sessioni*;
+  - **percorsi non ASCII** (es. nomi con accenti): diskpart lavora su un hard link temporaneo con nome ASCII (`<volume>\CompactVHDX.tmp`, stesso file), rimosso subito dopo; i link rimasti da run interrotte vengono puliti all'avvio e i dischi agganciati tramite link sono riconosciuti dallo stop forzato;
+  - **dischi fissi e differenziali**: tipo letto dall'intestazione VHDX/VHD e disco saltato con il motivo (la compattazione non li riduce) invece di finire tra gli errori;
+  - report HTML con lo stile comune dei tool (tema chiaro/scuro, stampa/PDF) e pannello con grafica rinnovata;
+  - `CompactVHDX-Setup.ps1` rigenerato anche da `python _lib/build.py` (equivalente di `-SetupOnly -NoSign`).
 - **2.1.0** — robustezza:
   - i task di compattazione (pianificato e manuale) non possono più essere terminati a forza, né dal limite di durata né da *Termina* nell'Utilità di pianificazione: prima un'esecuzione lunga poteva essere uccisa a metà disco, lasciandolo agganciato. Per fermare restano *Stop pulito* e `Stop-CompactVHDX.ps1 [-Force]`;
   - dopo un aggiornamento il pannello registra di nuovo i task con la pianificazione salvata, così le nuove impostazioni valgono anche per le installazioni esistenti;

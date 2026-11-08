@@ -2,7 +2,7 @@
 
 Tool e script operativi generici, eseguibili su qualunque ambiente. Nessun dato specifico di clienti: tutto è parametrizzato o auto-rilevato.
 
-Regole complete in [CLAUDE.md](CLAUDE.md). Per un nuovo tool si parte da [`_template/`](_template/) (script semplice) oppure dalla libreria [`_lib/toolkit`](_lib/toolkit/) (tool con GUI configurabile, generato con `python _lib/build.py`).
+Regole complete in [CLAUDE.md](CLAUDE.md). Per un nuovo tool si parte da [`_template/`](_template/) (script semplice) oppure dalla libreria [`_lib/toolkit`](_lib/toolkit/) (tool con GUI configurabile, generato con `python _lib/build.py`). Grafica comune: tema moderno della GUI in `_lib/toolkit/core_main.ps1`, report HTML condivisi in [`_lib/report`](_lib/report/) (indicatori, ricerca, filtri per esito, ordinamento, tema chiaro/scuro, stampa/PDF).
 
 ## Indice
 
@@ -14,7 +14,7 @@ Regole complete in [CLAUDE.md](CLAUDE.md). Per un nuovo tool si parte da [`_temp
 ### Remote Desktop / Terminal Server — [`rds/`](rds/)
 | Tool | Descrizione | Versione |
 |---|---|---|
-| [fslogix/compact-vhdx](rds/fslogix/compact-vhdx/) | Compattazione offline pianificata dei VHDX FSLogix sul file server: pannello, report, storico, email | 2.1.0 |
+| [fslogix/compact-vhdx](rds/fslogix/compact-vhdx/) | Compattazione offline pianificata dei VHDX FSLogix sul file server: pannello, report, storico, email; salta sessioni RDS aperte e dischi fissi, gestisce i percorsi non ASCII | 2.2.0 |
 | [fslogix/roaming-to-fslogix](rds/fslogix/roaming-to-fslogix/) | Migra profili Roaming (.V6) in nuovi dischi FSLogix: GUI configurabile, simulazione, -NoGui | 2.0.0 |
 | [fslogix/upd-to-fslogix](rds/fslogix/upd-to-fslogix/) | Migra User Profile Disk (UPD) in FSLogix lavorando su copia: GUI configurabile, simulazione, -NoGui | 2.0.0 |
 | [fslogix/local-to-fslogix](rds/fslogix/local-to-fslogix/) | Migra profili locali in FSLogix con frx.exe, profili letti da ProfileList: GUI configurabile, simulazione, -NoGui | 2.0.0 |

@@ -52,9 +52,12 @@ Set-CVInstallInfo
 try { [void](Update-CVTasksIfNeeded $script:cfg) } catch { Write-CVEvent 1005 "Aggiornamento dei task pianificati non riuscito: $($_.Exception.Message)" 'Warning' }
 
 # --------------------------------------------------------------------- helper UI
-$script:Font     = New-Object System.Drawing.Font('Segoe UI', 9)
-$script:FontBold = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
-$script:FontBig  = New-Object System.Drawing.Font('Segoe UI', 16, [System.Drawing.FontStyle]::Bold)
+$fams = @((New-Object System.Drawing.Text.InstalledFontCollection).Families | ForEach-Object { $_.Name })
+$script:FontName = if ($fams -contains 'Segoe UI Variable Text') { 'Segoe UI Variable Text' } else { 'Segoe UI' }
+$script:FontSemiName = if ($fams -contains 'Segoe UI Semibold') { 'Segoe UI Semibold' } else { $script:FontName }
+$script:Font     = New-Object System.Drawing.Font($script:FontName, 9.5)
+$script:FontBold = New-Object System.Drawing.Font($script:FontSemiName, 9.5)
+$script:FontBig  = New-Object System.Drawing.Font($script:FontSemiName, 18)
 $script:FontMono = New-Object System.Drawing.Font('Consolas', 9)
 $cOk   = [System.Drawing.Color]::FromArgb(30, 123, 74)
 $cWarn = [System.Drawing.Color]::FromArgb(183, 121, 31)
@@ -617,6 +620,24 @@ $grpExc = Add-Ctl $tSet 'GroupBox' 16 358 520 260 @{ Text = 'Utenti esclusi (uno
 $txtExc = Add-Ctl $grpExc 'TextBox' 16 26 488 196 @{ Multiline = $true; ScrollBars = 'Vertical' }
 [void](Add-Ctl $grpExc 'Label' 16 226 488 30 @{ ForeColor = $cMut; Text = 'Nome utente come compare nella cartella del profilo (SID_utente o utente_SID), es. mario.rossi' })
 
+$grpSes = Add-Ctl $tSet 'GroupBox' 16 630 1060 130 @{ Text = 'Sessioni RDS (evita la compattazione durante un accesso)' }
+$chkSes = Add-Ctl $grpSes 'CheckBox' 16 24 640 22 @{ Text = 'Salta i dischi degli utenti con una sessione aperta o disconnessa sui session host' }
+[void](Add-Ctl $grpSes 'Label' 16 56 150 22 @{ Text = 'Session host:' })
+$txtHosts = Add-Ctl $grpSes 'TextBox' 170 53 560 24
+$btnHostsTest = Add-Ctl $grpSes 'Button' 740 51 150 28 @{ Text = 'Verifica sessioni' }
+[void](Add-Ctl $grpSes 'Label' 16 86 1030 34 @{ ForeColor = $cMut; Text = 'Nomi separati da virgola (es. RDSH01, RDSH02). Vuoto = rilevati dal Connection Broker se il modulo RemoteDesktop e'' disponibile su questo server. Il controllo si ripete prima di ogni disco e dopo la compattazione.' })
+$btnHostsTest.Add_Click({
+    Invoke-UI {
+        $tmp = @{ SessionHosts = @($txtHosts.Text -split '[,;\s]+' | Where-Object { $_ }) }
+        $h = @(Get-CVSessionHosts $tmp)
+        if (-not $h.Count) { Show-Info 'Nessun session host indicato ne'' rilevato dal Connection Broker.'; return }
+        $r = Get-CVSessionUsers $h
+        $txt = "Session host: $($h -join ', ')`nUtenti con sessione: $(@($r.Users | Where-Object { $_ -like '*\*' }).Count)"
+        if ($r.Errors.Count) { $txt += "`n`nNon raggiungibili:`n" + ($r.Errors -join "`n") }
+        Show-Info $txt
+    }
+})
+
 $grpMail = Add-Ctl $tSet 'GroupBox' 552 10 524 400 @{ Text = 'Email a fine esecuzione' }
 $chkMail = Add-Ctl $grpMail 'CheckBox' 16 24 300 22 @{ Text = 'Invia email a fine compattazione' }
 [void](Add-Ctl $grpMail 'Label' 16 54 70 22 @{ Text = 'Metodo:' })
@@ -671,6 +692,8 @@ function Show-Settings {
     $numStale.Value = [math]::Max(7, [math]::Min(3650, [int]$c.StaleDays))
     $numRet.Value = [math]::Max(0, [math]::Min(3650, [int]$c.RetentionDays))
     $txtExc.Text = (@($c.ExcludeUsers) -join "`r`n")
+    $chkSes.Checked = [bool]$c.SkipActiveSessions
+    $txtHosts.Text = (@($c.SessionHosts) -join ', ')
     $chkMail.Checked = [bool]$c.Mail.Enabled
     $rbGraph.Checked = "$($c.Mail.Method)" -eq 'Graph'
     $rbSmtp.Checked = -not $rbGraph.Checked
@@ -702,6 +725,8 @@ function Read-SettingsUI {
     $c.StaleDays = [int]$numStale.Value
     $c.RetentionDays = [int]$numRet.Value
     $c.ExcludeUsers = @($txtExc.Lines | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    $c.SkipActiveSessions = $chkSes.Checked
+    $c.SessionHosts = @($txtHosts.Text -split '[,;\s]+' | Where-Object { $_ })
     $c.Mail.Enabled = $chkMail.Checked
     $c.Mail.Method = $(if ($rbGraph.Checked) { 'Graph' } else { 'Smtp' })
     $c.Mail.TenantId = $txtTenant.Text.Trim()
@@ -953,6 +978,77 @@ $timer.Add_Tick({
         $stLabel.Text = "Compattazione: $(if ($alive) { 'IN ESECUZIONE' } else { 'ferma' })    |    Prossima esecuzione: $script:nextRun    |    Profili: $((Get-CVProfilePaths $script:cfg) -join '; ')"
     } catch { }
 })
+
+# --------------------------------------------------------------------- tema grafico moderno
+$ui = @{
+    Bg = [System.Drawing.ColorTranslator]::FromHtml('#F6F7FB'); Surface = [System.Drawing.Color]::White; Surface2 = [System.Drawing.ColorTranslator]::FromHtml('#F1F4F9')
+    Border = [System.Drawing.ColorTranslator]::FromHtml('#E3E8F0'); Text = [System.Drawing.ColorTranslator]::FromHtml('#0F172A'); Muted = [System.Drawing.ColorTranslator]::FromHtml('#64748B')
+    Accent = [System.Drawing.ColorTranslator]::FromHtml('#2563EB'); AccentDark = [System.Drawing.ColorTranslator]::FromHtml('#1D4ED8'); AccentSoft = [System.Drawing.ColorTranslator]::FromHtml('#DBEAFE')
+    Header = [System.Drawing.ColorTranslator]::FromHtml('#0F172A'); HeaderMuted = [System.Drawing.ColorTranslator]::FromHtml('#94A3B8')
+}
+function Set-CVModernControl($c) {
+    if ($c -is [System.Windows.Forms.Button]) {
+        $c.FlatStyle = 'Flat'; $c.Cursor = [System.Windows.Forms.Cursors]::Hand; $c.Font = $script:FontBold; $c.UseVisualStyleBackColor = $false
+        if ($c.Text -match '^(Avvia|Esegui|Salva|Compatta|Registra|Aggiorna situazione)') {
+            $c.BackColor = $ui.Accent; $c.ForeColor = [System.Drawing.Color]::White; $c.FlatAppearance.BorderSize = 0; $c.FlatAppearance.MouseOverBackColor = $ui.AccentDark
+        } else {
+            $c.BackColor = $ui.Surface; $c.FlatAppearance.BorderColor = $ui.Border; $c.FlatAppearance.BorderSize = 1; $c.FlatAppearance.MouseOverBackColor = $ui.Surface2
+            if ($c.ForeColor.ToArgb() -eq [System.Drawing.SystemColors]::ControlText.ToArgb()) { $c.ForeColor = $ui.Text }
+        }
+    } elseif ($c -is [System.Windows.Forms.DataGridView]) {
+        $c.BorderStyle = 'None'; $c.CellBorderStyle = 'SingleHorizontal'; $c.GridColor = $ui.Border; $c.EnableHeadersVisualStyles = $false
+        $c.ColumnHeadersBorderStyle = 'None'; $c.ColumnHeadersHeight = 36; $c.ColumnHeadersHeightSizeMode = 'DisableResizing'
+        $c.ColumnHeadersDefaultCellStyle.BackColor = $ui.Surface2; $c.ColumnHeadersDefaultCellStyle.ForeColor = $ui.Muted; $c.ColumnHeadersDefaultCellStyle.Font = $script:FontBold
+        $c.ColumnHeadersDefaultCellStyle.SelectionBackColor = $ui.Surface2
+        $c.RowTemplate.Height = 30; $c.DefaultCellStyle.SelectionBackColor = $ui.AccentSoft; $c.DefaultCellStyle.SelectionForeColor = $ui.Text
+        $c.AlternatingRowsDefaultCellStyle.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#FAFBFD'); $c.BackgroundColor = $ui.Surface
+    } elseif ($c -is [System.Windows.Forms.TextBox]) {
+        $c.BorderStyle = 'FixedSingle'
+    } elseif ($c -is [System.Windows.Forms.GroupBox]) {
+        $c.BackColor = $ui.Surface
+    } elseif ($c -is [System.Windows.Forms.Panel] -and $c.BorderStyle -eq 'FixedSingle') {
+        $c.BorderStyle = 'None'; $c.BackColor = $ui.Surface
+    } elseif ($c -is [System.Windows.Forms.TabPage]) {
+        $c.BackColor = $ui.Bg
+    }
+    foreach ($x in $c.Controls) { Set-CVModernControl $x }
+}
+
+$hdr = New-Object System.Windows.Forms.Panel
+$hdr.Dock = 'Top'; $hdr.Height = 60; $hdr.BackColor = $ui.Header
+$hdrT = New-Object System.Windows.Forms.Label
+$hdrT.Text = 'CompactVHDX Manager'; $hdrT.AutoSize = $true; $hdrT.ForeColor = [System.Drawing.Color]::White
+$hdrT.Font = New-Object System.Drawing.Font($script:FontSemiName, 14); $hdrT.Location = New-Object System.Drawing.Point(20, 8)
+$hdrS = New-Object System.Windows.Forms.Label
+$hdrS.Text = "Compattazione offline dei dischi profilo FSLogix  -  versione $script:CVVersion  -  $env:COMPUTERNAME"; $hdrS.AutoSize = $true
+$hdrS.ForeColor = $ui.HeaderMuted; $hdrS.Location = New-Object System.Drawing.Point(22, 36)
+$hdr.Controls.AddRange(@($hdrT, $hdrS))
+$form.Controls.Add($hdr)
+$tabs.BringToFront()
+$form.BackColor = $ui.Bg
+
+$tabs.DrawMode = 'OwnerDrawFixed'
+$tabs.SizeMode = 'Fixed'
+$tabs.ItemSize = New-Object System.Drawing.Size(150, 36)
+$tabs.Add_DrawItem({
+    param($s, $e)
+    $r = $s.GetTabRect($e.Index)
+    $sel = $e.Index -eq $s.SelectedIndex
+    $bg = New-Object System.Drawing.SolidBrush($ui.Bg)
+    $e.Graphics.FillRectangle($bg, (New-Object System.Drawing.Rectangle(($r.X - 2), ($r.Y - 2), ($r.Width + 4), ($r.Height + 4))))
+    $fg = $ui.Muted
+    $font = $script:Font
+    if ($sel) {
+        $fg = $ui.Accent; $font = $script:FontBold
+        $ln = New-Object System.Drawing.SolidBrush($ui.Accent)
+        $e.Graphics.FillRectangle($ln, (New-Object System.Drawing.Rectangle(($r.X + 14), ($r.Bottom - 3), ($r.Width - 28), 3)))
+        $ln.Dispose()
+    }
+    [System.Windows.Forms.TextRenderer]::DrawText($e.Graphics, $s.TabPages[$e.Index].Text, $font, $r, $fg, [System.Windows.Forms.TextFormatFlags]'HorizontalCenter, VerticalCenter')
+    $bg.Dispose()
+})
+Set-CVModernControl $tabs
+
 
 $form.Add_Shown({
     if (-not (Test-CVSetupComplete)) {

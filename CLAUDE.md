@@ -33,6 +33,7 @@ Standard dei tool (modello: `rds/fslogix/compact-vhdx` e i migratori FSLogix):
 - file `.ps1` in **UTF-8 con BOM** (PowerShell 5.1 legge male i file senza BOM)
 - codice condiviso: libreria `_lib/toolkit` (avvio/elevazione, motore con log/esecuzione/report, configurazione JSON, `-NoGui`, GUI a schede generata dallo schema dei campi). Un nuovo tool con GUI fornisce solo `_src/head.ps1` (help, parametri, `$Tool`), `_src/engine.ps1` (`Get-ToolDefaultConfig`, `Get-ToolPrereqIssues`, `Test-ToolConfig`, `Get-ToolItems`, `Invoke-ToolItem`) e `_src/gui.ps1` (`$ToolSchema`, `$ToolColumns`), si registra in `_lib/build.py` e si genera con `python _lib/build.py`. I file generati restano single-file e non si modificano a mano
 - sorgenti **solo ASCII** (accenti come `e'`): `build.py` blocca i caratteri non ASCII
+- report HTML: sempre con `_lib/report` (`New-RptDocument`, `New-RptTable`, `New-RptKpi`...), iniettato da `build.py` tra i marcatori `#region RPT-ASSETS` nei file elencati in `RPT_TARGETS`; i tool della libreria lo hanno gia' (report standard di ogni esecuzione)
 - controllo automatico: `.github/workflows/powershell.yml` verifica la sintassi di tutti i `.ps1` con il parser di PowerShell 5.1 (scheda Actions)
 
 Script PowerShell:
