@@ -33,5 +33,5 @@ Regole complete in [CLAUDE.md](CLAUDE.md). Per un nuovo tool si parte da [`_temp
 ## Progetti in definizione
 | Progetto | Descrizione | Stato |
 |---|---|---|
-| [ad-hardening](active-directory/ad-hardening/) | Fotografia della sicurezza e salute di AD (stile PingCastle / Purple Knight), hardening guidato con rollback (gMSA, LAPS, Protected Users, audit policy, Tier model), documentazione | Fase 1 (fotografia, 28 controlli) + fase 2 (hardening, 38 azioni con simulazione, backup e verifica): `Invoke-ADAssessment.ps1` 0.2.0 |
+| [ad-hardening](active-directory/ad-hardening/) | Fotografia della sicurezza e salute di AD (stile PingCastle / Purple Knight), hardening guidato con rollback (gMSA, LAPS, Protected Users, audit policy, Tier model), documentazione | Fotografia (31 controlli, confronto automatico) + hardening (42 azioni con simulazione, backup e verifica) + ripristino dai backup: `Invoke-ADAssessment.ps1` 0.3.0 |
 | [sspr](active-directory/sspr/) | Self Service Password Reset on-prem: reset, cambio, sblocco, pannello admin, TOTP/SMS/email, dati in attributi AD confidenziali, installer guidato | 0.3.0: servizio, portale, pannello admin con personalizzazione completa (aspetto, testi, notifiche, funzioni), installer guidato con gMSA (C#/.NET, pacchetto dalla CI; da collaudare) |

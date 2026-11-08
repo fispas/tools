@@ -19,7 +19,9 @@
 
     function Get-RunDir($Config) {
         if (-not $script:RunDir) {
-            $script:RunDir = Join-Path ([string]$Config.OutputDir) ('Hardening_{0}_{1}' -f (Get-AdContext $Config).Dns, (Get-Date -Format 'yyyyMMdd_HHmmss'))
+            $prefix = 'Hardening'
+            if ([string]$Config.Mode -eq 'Ripristino') { $prefix = 'Ripristino' }
+            $script:RunDir = Join-Path ([string]$Config.OutputDir) ('{0}_{1}_{2}' -f $prefix, (Get-AdContext $Config).Dns, (Get-Date -Format 'yyyyMMdd_HHmmss'))
             New-Item -ItemType Directory -Path $script:RunDir -Force | Out-Null
         }
         $script:RunDir
@@ -283,6 +285,18 @@
             @{ Id = 'HD-DC-LOGS'; Title = "Registri di sicurezza e PowerShell sui DC (Security $($Config.SecurityLogMaxMB) MB)"; Impact = 'Basso'; Gpo = 'DC Audit'; Scope = 'DC'
                Values = @(@('HKLM\Software\Policies\Microsoft\Windows\EventLog\Security', 'MaxSize', 'DWord', $logKb), @('HKLM\Software\Microsoft\Windows\CurrentVersion\Policies\System\Audit', 'ProcessCreationIncludeCmdLine_Enabled', 'DWord', 1), @('HKLM\Software\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging', 'EnableScriptBlockLogging', 'DWord', 1), @('HKLM\SYSTEM\CurrentControlSet\Control\Lsa', 'SCENoApplyLegacyAuditPolicy', 'DWord', 1))
                Undo = 'Rimuovere i valori dalla GPO DC Audit.' }
+            @{ Id = 'HD-DC-NTLMAUDIT'; Title = 'Audit dell''uso di NTLM sui DC (prima di restringerlo)'; Impact = 'Basso'; Gpo = 'DC Audit'; Scope = 'DC'
+               Values = @(@('HKLM\SYSTEM\CurrentControlSet\Services\Netlogon\Parameters', 'AuditNTLMInDomain', 'DWord', 7), @('HKLM\SYSTEM\CurrentControlSet\Control\Lsa\MSV1_0', 'AuditReceivingNTLMTraffic', 'DWord', 2))
+               Undo = 'Rimuovere i valori dalla GPO DC Audit. Eventi in Applicazioni e servizi > Microsoft > Windows > NTLM > Operational (8001-8004).' }
+            @{ Id = 'HD-MB-NTLMAUDIT'; Title = 'Audit dell''uso di NTLM su server e client'; Impact = 'Basso'; Gpo = 'Member Hardening'; Scope = 'Member'
+               Values = @(@('HKLM\SYSTEM\CurrentControlSet\Control\Lsa\MSV1_0', 'AuditReceivingNTLMTraffic', 'DWord', 2), @('HKLM\SYSTEM\CurrentControlSet\Control\Lsa\MSV1_0', 'RestrictSendingNTLMTraffic', 'DWord', 1))
+               Undo = 'Rimuovere i valori dalla GPO Member Hardening.' }
+            @{ Id = 'HD-MB-CREDGUARD'; Title = 'Credential Guard su server e client (senza blocco UEFI)'; Impact = 'Medio'; Gpo = 'Member Hardening'; Scope = 'Member'
+               Values = @(@('HKLM\SOFTWARE\Policies\Microsoft\Windows\DeviceGuard', 'EnableVirtualizationBasedSecurity', 'DWord', 1), @('HKLM\SOFTWARE\Policies\Microsoft\Windows\DeviceGuard', 'RequirePlatformSecurityFeatures', 'DWord', 1), @('HKLM\SOFTWARE\Policies\Microsoft\Windows\DeviceGuard', 'LsaCfgFlags', 'DWord', 2))
+               Undo = 'Rimuovere i valori dalla GPO e riavviare. Richiede UEFI, Secure Boot e virtualizzazione; non usare sui DC. Incompatibile con delega non vincolata, NTLMv1, DES.' }
+            @{ Id = 'HD-MB-RCG'; Title = 'Remote Credential Guard / Restricted Admin per RDP'; Impact = 'Basso'; Gpo = 'Member Hardening'; Scope = 'Member'
+               Values = @(, @('HKLM\SOFTWARE\Policies\Microsoft\Windows\CredentialsDelegation', 'AllowProtectedCreds', 'DWord', 1))
+               Undo = 'Rimuovere AllowProtectedCreds dalla GPO. Uso: mstsc /remoteGuard dai PC amministrativi.' }
             @{ Id = 'HD-MB-SMB1'; Title = 'SMBv1 disattivato su server e client'; Impact = 'Medio'; Gpo = 'Member Hardening'; Scope = 'Member'
                Values = @(@('HKLM\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters', 'SMB1', 'DWord', 0), @('HKLM\SYSTEM\CurrentControlSet\Services\mrxsmb10', 'Start', 'DWord', 4))
                Undo = 'Rimuovere i valori dalla GPO Member Hardening (verificare prima stampanti/NAS che usano SMBv1).' }
@@ -890,29 +904,37 @@
         foreach ($f in @($Results | Where-Object { -not $_.Dati })) {
             $acts += [pscustomobject]@{ Id = $f.Utente; Categoria = $f.Origine; Titolo = $f.Utente; Impatto = ''; Richiede = ''; Prima = ''; Piano = ''; Esito = $f.Esito; Messaggio = $f.Messaggio; Dopo = ''; Annullamento = '' }
         }
+        $restore = [string]$Config.Mode -eq 'Ripristino'
         $dir = if ($script:RunDir) { $script:RunDir } else { Get-RunDir $Config }
         $mode = if ($Config.DryRun) { 'SIMULAZIONE - nessuna modifica eseguita' } else { 'ESECUZIONE REALE' }
-        $base = Join-Path $dir 'hardening'
+        $name = if ($restore) { 'ripristino' } else { 'hardening' }
+        $base = Join-Path $dir $name
         $acts | Export-Csv -LiteralPath "$base.csv" -NoTypeInformation -Delimiter ';' -Encoding UTF8
         [System.IO.File]::WriteAllText("$base.json", ([pscustomobject]@{ Dominio = $ctx.Dns; DC = $ctx.Dc; Data = (Get-Date).ToString('s'); Modalita = $mode; Eseguito = "$env:USERDOMAIN\$env:USERNAME"; Azioni = $acts } | ConvertTo-Json -Depth 6), (New-Object System.Text.UTF8Encoding($true)))
-        $colors = @{ 'OK' = '#2f855a'; 'Simulato' = '#3182ce'; 'Attenzione' = '#dd6b20'; 'Fallito' = '#c53030'; 'Annullato' = '#718096' }
-        $sb = New-Object System.Text.StringBuilder
-        [void]$sb.Append('<!DOCTYPE html><html lang="it"><head><meta charset="utf-8"><title>Hardening AD - ' + (ConvertTo-HtmlText $ctx.Dns) + '</title><style>')
-        [void]$sb.Append('body{font-family:Segoe UI,Arial,sans-serif;margin:0;background:#f4f6f8;color:#1a202c}.wrap{max-width:1100px;margin:0 auto;padding:24px}.muted{color:#718096;font-size:13px}')
-        [void]$sb.Append('.a{background:#fff;border-radius:8px;margin:10px 0;padding:12px 16px;border-left:6px solid #cbd5e0}.badge{display:inline-block;color:#fff;border-radius:4px;padding:1px 8px;font-size:12px;margin-right:8px}')
-        [void]$sb.Append('.id{font-family:Consolas,monospace;color:#4a5568;font-size:12px;margin-right:8px}.row{font-size:14px;margin-top:4px}.row b{color:#2d3748}</style></head><body><div class="wrap">')
-        [void]$sb.Append("<h1>Hardening Active Directory</h1><div class=`"muted`">Dominio <b>$(ConvertTo-HtmlText $ctx.Dns)</b> - DC $(ConvertTo-HtmlText $ctx.Dc) - $((Get-Date).ToString('yyyy-MM-dd HH:mm')) - $(ConvertTo-HtmlText "$env:USERDOMAIN\$env:USERNAME") - <b>$mode</b></div>")
-        foreach ($x in $acts) {
-            $c = $colors[[string]$x.Esito]; if (-not $c) { $c = '#718096' }
-            [void]$sb.Append("<div class=`"a`" style=`"border-left-color:$c`"><span class=`"badge`" style=`"background:$c`">$(ConvertTo-HtmlText $x.Esito)</span><span class=`"id`">$(ConvertTo-HtmlText $x.Id)</span><b>$(ConvertTo-HtmlText $x.Titolo)</b> <span class=`"muted`">impatto $(ConvertTo-HtmlText $x.Impatto)</span>")
-            foreach ($r in @(@('Prima', $x.Prima), @('Piano', $x.Piano), @('Risultato', $x.Messaggio), @('Dopo', $x.Dopo), @('Come annullare', $x.Annullamento))) {
-                if ($r[1]) { [void]$sb.Append("<div class=`"row`"><b>$($r[0]):</b> $(ConvertTo-HtmlText $r[1])</div>") }
-            }
-            [void]$sb.Append('</div>')
+        $hero = New-Object System.Collections.Generic.List[string]
+        $hero.Add((New-RptKpi $acts.Count 'Azioni elaborate'))
+        foreach ($e in @('OK', 'Simulato', 'Attenzione', 'Fallito', 'Annullato')) {
+            $n = @($acts | Where-Object { $_.Esito -eq $e }).Count
+            if ($n) { $hero.Add((New-RptKpi $n $e (Get-RptTone $e))) }
         }
-        [void]$sb.Append("<p class=`"muted`">Backup dello stato precedente: file *.backup.json in $(ConvertTo-HtmlText $dir)</p></div></body></html>")
-        [System.IO.File]::WriteAllText("$base.html", $sb.ToString(), (New-Object System.Text.UTF8Encoding($true)))
-        Write-ToolLog "Report di hardening: $base.html" 'OK'
+        $sb = New-Object System.Text.StringBuilder
+        [void]$sb.Append("<section class=`"card`" data-filter><h2>Azioni <span class=`"n`"></span></h2><div class=`"toolbar`"><input type=`"search`" placeholder=`"Cerca...`">")
+        foreach ($g in @($acts | Group-Object Esito)) { [void]$sb.Append("<span class=`"chip`" data-v=`"$(ConvertTo-RptHtml $g.Name)`">$(ConvertTo-RptHtml $g.Name)<span class=`"c`">$($g.Count)</span></span>") }
+        [void]$sb.Append('</div>')
+        foreach ($x in $acts) {
+            $imp = ''
+            if ($x.Impatto) { $imp = "<span class=`"muted`">impatto $(ConvertTo-RptHtml $x.Impatto)</span>" }
+            [void]$sb.Append("<details class=`"item`" data-row data-s=`"$(ConvertTo-RptHtml $x.Esito)`"><summary>$(New-RptBadge ([string]$x.Esito))<span class=`"mono muted`">$(ConvertTo-RptHtml $x.Id)</span><span class=`"t`">$(ConvertTo-RptHtml $x.Titolo)</span>$imp</summary><div class=`"det`"><div class=`"kv`">")
+            foreach ($r in @(@('Categoria', $x.Categoria), @('Prima', $x.Prima), @('Piano', $x.Piano), @('Risultato', $x.Messaggio), @('Dopo', $x.Dopo), @('Come annullare', $x.Annullamento), @('Richiede', $x.Richiede))) {
+                if ($r[1]) { [void]$sb.Append("<b>$($r[0])</b><span>$(ConvertTo-RptHtml $r[1])</span>") }
+            }
+            [void]$sb.Append('</div></div></details>')
+        }
+        [void]$sb.Append("</section><p class=`"muted`">Backup dello stato precedente: file *.backup.json in $(ConvertTo-RptHtml $dir). Per annullare: modalita' Ripristino su questa cartella.</p>")
+        $title = if ($restore) { 'Ripristino hardening Active Directory' } else { 'Hardening Active Directory' }
+        $html = New-RptDocument -Title "$title - $($ctx.Dns)" -Subtitle "DC $($ctx.Dc) - $((Get-Date).ToString('dd/MM/yyyy HH:mm')) - $env:USERDOMAIN\$env:USERNAME - $mode" -Badge 'AD' -HeroHtml ($hero -join '') -BodyHtml $sb.ToString()
+        [System.IO.File]::WriteAllText("$base.html", $html, (New-Object System.Text.UTF8Encoding($true)))
+        Write-ToolLog "Report: $base.html" 'OK'
         "$base.html"
     }
     #endregion

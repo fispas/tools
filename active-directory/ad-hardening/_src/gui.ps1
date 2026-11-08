@@ -1,8 +1,10 @@
 #region SPECIFICO: campi della configurazione e colonne
 $ToolSchema = @(
     @{ Type = 'Section'; Label = 'Modalita''' }
-    @{ Key = 'Mode'; Label = 'Modalita'''; Type = 'Choice'; Choices = @('Fotografia', 'Hardening'); Help = 'Fotografia: controlli in sola lettura e report. Hardening: azioni correttive selezionabili una per una, con verifica dello stato prima e dopo, backup e report. Dopo il cambio premere Analizza.' }
+    @{ Key = 'Mode'; Label = 'Modalita'''; Type = 'Choice'; Choices = @('Fotografia', 'Hardening', 'Ripristino'); Help = 'Fotografia: controlli in sola lettura e report. Hardening: azioni correttive selezionabili una per una, con verifica prima e dopo, backup e report. Ripristino: annulla le azioni di un''esecuzione di hardening partendo dai suoi backup. Dopo il cambio premere Analizza.' }
     @{ Key = 'DryRun'; Label = 'Simulazione (hardening)'; Type = 'Bool'; Help = 'Attiva di default: mostra cosa verrebbe fatto senza modificare nulla. Toglierla solo dopo aver letto il report di simulazione.' }
+    @{ Key = 'CompareWith'; Label = 'Fotografia da confrontare'; Type = 'File'; Filter = 'Fotografia (*.json)|*.json'; Help = 'Vuoto = l''ultima fotografia dello stesso dominio nella cartella dei report. Il report mostra rischi nuovi, risolti, peggiorati e la variazione del punteggio.' }
+    @{ Key = 'RestoreFolder'; Label = 'Cartella da ripristinare'; Type = 'Folder'; Help = 'Solo modalita'' Ripristino: cartella Hardening_<dominio>_<data> con i file *.backup.json da annullare.' }
     @{ Type = 'Section'; Label = 'Dominio' }
     @{ Key = 'DomainController'; Label = 'Domain controller'; Type = 'Text'; Help = 'Vuoto = scelto automaticamente. Letture LDAP, GPO e SYSVOL usano tutte questo DC (niente conflitti di replica).' }
     @{ Type = 'Section'; Label = 'Soglie' }

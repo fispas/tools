@@ -1,4 +1,4 @@
-
+﻿
     #region SPECIFICO: fotografia di sicurezza di Active Directory (sola lettura)
 
     $script:Dom = $null
@@ -7,6 +7,8 @@
         [ordered]@{
             Mode             = 'Fotografia'
             DryRun           = $true
+            CompareWith      = ''
+            RestoreFolder    = ''
             DomainController = ''
             InactiveDays     = 90
             KrbtgtMaxDays    = 180
@@ -61,8 +63,10 @@
     function Test-ToolConfig($Config, [switch]$Scan) {
         $e = @()
         $hard = [string]$Config.Mode -eq 'Hardening'
-        # in fotografia lo strumento e' in sola lettura; in hardening vale la simulazione
-        $Tool.ReadOnly = -not $hard
+        # in fotografia lo strumento e' in sola lettura; in hardening e ripristino vale la simulazione
+        $Tool.ReadOnly = [string]$Config.Mode -eq 'Fotografia'
+        if ([string]$Config.Mode -eq 'Ripristino' -and -not ($Config.RestoreFolder -and (Test-Path -LiteralPath ([string]$Config.RestoreFolder)))) { $e += 'Ripristino: indicare la cartella di un''esecuzione di hardening (Hardening_<dominio>_<data>).' }
+        if ($Config.CompareWith -and -not (Test-Path -LiteralPath ([string]$Config.CompareWith))) { $e += "Fotografia da confrontare non trovata: $($Config.CompareWith)" }
         try { [void](Get-AdContext $Config) } catch { $e += "Dominio non raggiungibile: $($_.Exception.Message)" }
         if (-not $Scan -and -not $Config.OutputDir) { $e += 'Indicare la cartella dei report.' }
         if ($hard) {
@@ -505,13 +509,14 @@
                 if ($ko.Count -eq $dcs.Count) { return New-CheckResult 'Non verificato' 'Nessun DC interrogabile: servono privilegi di amministratore e WinRM' $ev }
                 New-CheckResult 'OK' 'Print Spooler fermo sui DC verificati' $ev
             } }
-        )
+        ) + @(Get-AdChecksExtra)
     }
 
     # ------------------------------------------------------------------ interfaccia verso la libreria
 
     function Get-ToolItems($Config) {
         if ([string]$Config.Mode -eq 'Hardening') { return Get-HardItems $Config }
+        if ([string]$Config.Mode -eq 'Ripristino') { return Get-RestoreItems $Config }
         $ctx = Get-AdContext $Config
         Write-ToolLog "Dominio $($ctx.Dns) - DC $($ctx.Dc)" 'STEP'
         foreach ($c in (Get-AdChecks)) {
@@ -533,6 +538,7 @@
 
     function Invoke-ToolItem($Config, $Item) {
         if ([string]$Config.Mode -eq 'Hardening') { return Invoke-HardItem $Config $Item }
+        if ([string]$Config.Mode -eq 'Ripristino') { return Invoke-RestoreItem $Config $Item }
         $c = @(Get-AdChecks | Where-Object { $_.Id -eq $Item.Id })[0]
         if (-not $c) { throw "Controllo sconosciuto: $($Item.Id)" }
         $r = & $c.Run $Config
@@ -551,7 +557,7 @@
 
     # Report HTML, JSON e CSV delle evidenze. Restituisce il percorso del report HTML
     function Complete-ToolRun($Config, $Results) {
-        if ([string]$Config.Mode -eq 'Hardening') { return Complete-HardRun $Config $Results }
+        if ([string]$Config.Mode -in @('Hardening', 'Ripristino')) { return Complete-HardRun $Config $Results }
         $ctx = Get-AdContext $Config
         $dir = [string]$Config.OutputDir
         New-Item -ItemType Directory -Path $dir -Force | Out-Null
@@ -571,52 +577,12 @@
         @(foreach ($c in $checks) { foreach ($e in @($c.Evidenze)) { [pscustomobject]@{ Id = $c.Id; Esito = $c.Esito; Evidenza = $e } } }) |
             Export-Csv -LiteralPath "$base`_evidenze.csv" -NoTypeInformation -Delimiter ';' -Encoding UTF8
 
-        # HTML
-        $colors = @{ 'OK' = '#2f855a'; 'Info' = '#3182ce'; 'Attenzione' = '#dd6b20'; 'Critico' = '#c53030'; 'Non verificato' = '#718096' }
-        $order = @{ 'Critico' = 0; 'Attenzione' = 1; 'Non verificato' = 2; 'Info' = 3; 'OK' = 4 }
+        # HTML (stile comune _lib/report) con confronto con la fotografia precedente
+        $prev = Get-PreviousSnapshot $Config "$base.json"
+        if ($prev) { Write-ToolLog "Confronto con $($prev.File) (punteggio $($prev.Meta.Punteggio))" }
+        [void](New-FotoHtml $Config $meta $checks $base $prev)
         $cnt = @{}
-        foreach ($k in $colors.Keys) { $cnt[$k] = @($checks | Where-Object { $_.Esito -eq $k }).Count }
-        $scoreColor = '#2f855a'
-        if ($score -lt 50) { $scoreColor = '#c53030' } elseif ($score -lt 75) { $scoreColor = '#dd6b20' }
-        $sb = New-Object System.Text.StringBuilder
-        [void]$sb.Append('<!DOCTYPE html><html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">')
-        [void]$sb.Append("<title>Fotografia AD - $(ConvertTo-HtmlText $ctx.Dns)</title><style>")
-        [void]$sb.Append('body{font-family:Segoe UI,Arial,sans-serif;margin:0;background:#f4f6f8;color:#1a202c}.wrap{max-width:1100px;margin:0 auto;padding:24px}')
-        [void]$sb.Append('h1{margin:0 0 4px}h2{margin:28px 0 10px;border-bottom:2px solid #cbd5e0;padding-bottom:4px}.muted{color:#718096;font-size:13px}')
-        [void]$sb.Append('.tiles{display:flex;gap:12px;flex-wrap:wrap;margin:18px 0}.tile{background:#fff;border-radius:8px;padding:14px 18px;min-width:120px;box-shadow:0 1px 2px rgba(0,0,0,.08)}.tile b{display:block;font-size:26px}')
-        [void]$sb.Append('.chk{background:#fff;border-radius:8px;margin:10px 0;padding:12px 16px;border-left:6px solid #cbd5e0;box-shadow:0 1px 2px rgba(0,0,0,.06)}')
-        [void]$sb.Append('.badge{display:inline-block;color:#fff;border-radius:4px;padding:1px 8px;font-size:12px;margin-right:8px}.id{font-family:Consolas,monospace;color:#4a5568;font-size:12px;margin-right:8px}')
-        [void]$sb.Append('.rem{margin-top:6px;font-size:14px}.rem b{color:#2d3748}details{margin-top:6px}summary{cursor:pointer;color:#3182ce;font-size:13px}pre{background:#f7fafc;padding:8px;white-space:pre-wrap;font-size:12px;max-height:320px;overflow:auto}')
-        [void]$sb.Append('table{border-collapse:collapse;width:100%;background:#fff}td,th{padding:6px 10px;border-bottom:1px solid #e2e8f0;text-align:left;font-size:14px}</style></head><body><div class="wrap">')
-        [void]$sb.Append("<h1>Fotografia di sicurezza Active Directory</h1><div class=`"muted`">Dominio <b>$(ConvertTo-HtmlText $ctx.Dns)</b> - DC $(ConvertTo-HtmlText $ctx.Dc) - $($meta.Data) - eseguito da $(ConvertTo-HtmlText $meta.Eseguito) su $(ConvertTo-HtmlText $env:COMPUTERNAME) - $($Tool.Title) $($Tool.Version)</div>")
-        [void]$sb.Append("<div class=`"tiles`"><div class=`"tile`"><b style=`"color:$scoreColor`">$score/100</b>Punteggio</div>")
-        foreach ($k in @('Critico', 'Attenzione', 'Non verificato', 'Info', 'OK')) { [void]$sb.Append("<div class=`"tile`"><b style=`"color:$($colors[$k])`">$($cnt[$k])</b>$k</div>") }
-        [void]$sb.Append('</div>')
-        # riepilogo per categoria
-        [void]$sb.Append('<table><tr><th>Categoria</th><th>Critico</th><th>Attenzione</th><th>Punti di rischio</th></tr>')
-        foreach ($g in @($checks | Group-Object Categoria)) {
-            $gc = @($g.Group | Where-Object { $_.Esito -eq 'Critico' }).Count
-            $ga = @($g.Group | Where-Object { $_.Esito -eq 'Attenzione' }).Count
-            $gp = [int](($g.Group | Measure-Object -Property Punti -Sum).Sum)
-            [void]$sb.Append("<tr><td>$(ConvertTo-HtmlText $g.Name)</td><td>$gc</td><td>$ga</td><td>$gp</td></tr>")
-        }
-        [void]$sb.Append('</table>')
-        foreach ($g in @($checks | Group-Object Categoria)) {
-            [void]$sb.Append("<h2>$(ConvertTo-HtmlText $g.Name)</h2>")
-            foreach ($c in @($g.Group | Sort-Object { $order[$_.Esito] }, Id)) {
-                $col = $colors[$c.Esito]
-                if (-not $col) { $col = '#718096' }
-                [void]$sb.Append("<div class=`"chk`" style=`"border-left-color:$col`"><span class=`"badge`" style=`"background:$col`">$(ConvertTo-HtmlText $c.Esito)</span><span class=`"id`">$(ConvertTo-HtmlText $c.Id)</span><b>$(ConvertTo-HtmlText $c.Titolo)</b>")
-                if ($c.Punti) { [void]$sb.Append(" <span class=`"muted`">($($c.Punti) punti)</span>") }
-                [void]$sb.Append("<div>$(ConvertTo-HtmlText $c.Sintesi)</div>")
-                if ($c.Remediation -and $c.Esito -ne 'OK') { [void]$sb.Append("<div class=`"rem`"><b>Cosa fare:</b> $(ConvertTo-HtmlText $c.Remediation)</div>") }
-                $ev = @($c.Evidenze)
-                if ($ev.Count) { [void]$sb.Append("<details><summary>Evidenze ($($ev.Count))</summary><pre>$(ConvertTo-HtmlText ($ev -join "`n"))</pre></details>") }
-                [void]$sb.Append('</div>')
-            }
-        }
-        [void]$sb.Append("<p class=`"muted`">Strumento in sola lettura: nessuna modifica e' stata fatta al dominio. File: $(ConvertTo-HtmlText $base).json / _controlli.csv / _evidenze.csv</p></div></body></html>")
-        [System.IO.File]::WriteAllText("$base.html", $sb.ToString(), (New-Object System.Text.UTF8Encoding($true)))
+        foreach ($k in @('Critico', 'Attenzione')) { $cnt[$k] = @($checks | Where-Object { $_.Esito -eq $k }).Count }
         Write-ToolLog ('Punteggio {0}/100 (rischio {1} punti) - Critici {2}, Attenzione {3}' -f $score, $risk, $cnt['Critico'], $cnt['Attenzione']) 'STEP'
         Write-ToolLog "Report HTML: $base.html" 'OK'
         "$base.html"

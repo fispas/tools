@@ -3,9 +3,9 @@ function ConvertTo-RptHtml([object]$Text) { [System.Net.WebUtility]::HtmlEncode(
 # Tono grafico di un esito: ok / warn / err / info / sim / neutral
 function Get-RptTone([string]$Status) {
     switch -Regex ($Status) {
-        '^(OK|Conforme|Completato|Compattato|Riuscito)' { return 'ok' }
-        '^(Attenzione|Saltato|Avviso|Da applicare|Warning)' { return 'warn' }
-        '^(Fallito|Critico|Errore|Error)' { return 'err' }
+        '^(OK|Conforme|Completato|Compattato|Riuscito|Risolto|Migliorato)' { return 'ok' }
+        '^(Attenzione|Saltato|Avviso|Da applicare|Warning|Peggiorato|Nuove evidenze)' { return 'warn' }
+        '^(Fallito|Critico|Errore|Error|Nuovo rischio)' { return 'err' }
         '^(Simulato|Simulazione)' { return 'sim' }
         '^(Info|Non applicabile|Pronto)' { return 'info' }
         default { return 'neutral' }

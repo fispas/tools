@@ -15,6 +15,8 @@
     cifratura reversibile, password non obbligatoria, Guest, inattivi), Windows LAPS (schema, permessi, GPO),
     GPO di hardening per DC e membri (firma LDAP/SMB, channel binding, NTLMv2, SMBv1, Spooler, RunAsPPL,
     WDigest, registri), criteri di controllo avanzati sui DC, tier model (OU, gruppi, GPO di deny logon).
+    Modalita' Ripristino: annulla le azioni di un'esecuzione di hardening partendo dai suoi backup JSON.
+    La fotografia si confronta in automatico con la precedente dello stesso dominio (rischi nuovi e risolti).
     L'hardening richiede gli strumenti RSAT (ActiveDirectory, GroupPolicy) e un account Domain Admins
     (alcune azioni Enterprise o Schema Admins).
 
@@ -41,7 +43,7 @@
     .\Invoke-ADAssessment.ps1 -NoGui -ConfigPath D:\Assessment\contoso-hardening.json -User HD-MAQ,HD-PRE2K -Simulate
 
 .NOTES
-    Versione: 0.2.0 (fase 1 fotografia + fase 2 hardening)
+    Versione: 0.3.0 (fotografia, hardening, ripristino, confronto)
     Repo:     fispas/tools (active-directory/ad-hardening)
     Richiede: macchina nel dominio, PowerShell 5.1; per l'hardening RSAT AD + GPMC
 #>
@@ -56,7 +58,7 @@ param(
 $Tool = @{
     Name         = 'ADAssessment'
     Title        = 'Active Directory: fotografia e hardening'
-    Version      = '0.2.0'
+    Version      = '0.3.0'
     ReadOnly     = $true
     RequiresAdmin = $false
     ItemNoun     = 'controlli o azioni'
@@ -107,9 +109,9 @@ function ConvertTo-RptHtml([object]$Text) { [System.Net.WebUtility]::HtmlEncode(
 # Tono grafico di un esito: ok / warn / err / info / sim / neutral
 function Get-RptTone([string]$Status) {
     switch -Regex ($Status) {
-        '^(OK|Conforme|Completato|Compattato|Riuscito)' { return 'ok' }
-        '^(Attenzione|Saltato|Avviso|Da applicare|Warning)' { return 'warn' }
-        '^(Fallito|Critico|Errore|Error)' { return 'err' }
+        '^(OK|Conforme|Completato|Compattato|Riuscito|Risolto|Migliorato)' { return 'ok' }
+        '^(Attenzione|Saltato|Avviso|Da applicare|Warning|Peggiorato|Nuove evidenze)' { return 'warn' }
+        '^(Fallito|Critico|Errore|Error|Nuovo rischio)' { return 'err' }
         '^(Simulato|Simulazione)' { return 'sim' }
         '^(Info|Non applicabile|Pronto)' { return 'info' }
         default { return 'neutral' }
@@ -496,6 +498,8 @@ public static extern bool GetDiskFreeSpaceEx(string lpDirectoryName, out ulong l
         [ordered]@{
             Mode             = 'Fotografia'
             DryRun           = $true
+            CompareWith      = ''
+            RestoreFolder    = ''
             DomainController = ''
             InactiveDays     = 90
             KrbtgtMaxDays    = 180
@@ -550,8 +554,10 @@ public static extern bool GetDiskFreeSpaceEx(string lpDirectoryName, out ulong l
     function Test-ToolConfig($Config, [switch]$Scan) {
         $e = @()
         $hard = [string]$Config.Mode -eq 'Hardening'
-        # in fotografia lo strumento e' in sola lettura; in hardening vale la simulazione
-        $Tool.ReadOnly = -not $hard
+        # in fotografia lo strumento e' in sola lettura; in hardening e ripristino vale la simulazione
+        $Tool.ReadOnly = [string]$Config.Mode -eq 'Fotografia'
+        if ([string]$Config.Mode -eq 'Ripristino' -and -not ($Config.RestoreFolder -and (Test-Path -LiteralPath ([string]$Config.RestoreFolder)))) { $e += 'Ripristino: indicare la cartella di un''esecuzione di hardening (Hardening_<dominio>_<data>).' }
+        if ($Config.CompareWith -and -not (Test-Path -LiteralPath ([string]$Config.CompareWith))) { $e += "Fotografia da confrontare non trovata: $($Config.CompareWith)" }
         try { [void](Get-AdContext $Config) } catch { $e += "Dominio non raggiungibile: $($_.Exception.Message)" }
         if (-not $Scan -and -not $Config.OutputDir) { $e += 'Indicare la cartella dei report.' }
         if ($hard) {
@@ -994,13 +1000,14 @@ public static extern bool GetDiskFreeSpaceEx(string lpDirectoryName, out ulong l
                 if ($ko.Count -eq $dcs.Count) { return New-CheckResult 'Non verificato' 'Nessun DC interrogabile: servono privilegi di amministratore e WinRM' $ev }
                 New-CheckResult 'OK' 'Print Spooler fermo sui DC verificati' $ev
             } }
-        )
+        ) + @(Get-AdChecksExtra)
     }
 
     # ------------------------------------------------------------------ interfaccia verso la libreria
 
     function Get-ToolItems($Config) {
         if ([string]$Config.Mode -eq 'Hardening') { return Get-HardItems $Config }
+        if ([string]$Config.Mode -eq 'Ripristino') { return Get-RestoreItems $Config }
         $ctx = Get-AdContext $Config
         Write-ToolLog "Dominio $($ctx.Dns) - DC $($ctx.Dc)" 'STEP'
         foreach ($c in (Get-AdChecks)) {
@@ -1022,6 +1029,7 @@ public static extern bool GetDiskFreeSpaceEx(string lpDirectoryName, out ulong l
 
     function Invoke-ToolItem($Config, $Item) {
         if ([string]$Config.Mode -eq 'Hardening') { return Invoke-HardItem $Config $Item }
+        if ([string]$Config.Mode -eq 'Ripristino') { return Invoke-RestoreItem $Config $Item }
         $c = @(Get-AdChecks | Where-Object { $_.Id -eq $Item.Id })[0]
         if (-not $c) { throw "Controllo sconosciuto: $($Item.Id)" }
         $r = & $c.Run $Config
@@ -1040,7 +1048,7 @@ public static extern bool GetDiskFreeSpaceEx(string lpDirectoryName, out ulong l
 
     # Report HTML, JSON e CSV delle evidenze. Restituisce il percorso del report HTML
     function Complete-ToolRun($Config, $Results) {
-        if ([string]$Config.Mode -eq 'Hardening') { return Complete-HardRun $Config $Results }
+        if ([string]$Config.Mode -in @('Hardening', 'Ripristino')) { return Complete-HardRun $Config $Results }
         $ctx = Get-AdContext $Config
         $dir = [string]$Config.OutputDir
         New-Item -ItemType Directory -Path $dir -Force | Out-Null
@@ -1060,52 +1068,12 @@ public static extern bool GetDiskFreeSpaceEx(string lpDirectoryName, out ulong l
         @(foreach ($c in $checks) { foreach ($e in @($c.Evidenze)) { [pscustomobject]@{ Id = $c.Id; Esito = $c.Esito; Evidenza = $e } } }) |
             Export-Csv -LiteralPath "$base`_evidenze.csv" -NoTypeInformation -Delimiter ';' -Encoding UTF8
 
-        # HTML
-        $colors = @{ 'OK' = '#2f855a'; 'Info' = '#3182ce'; 'Attenzione' = '#dd6b20'; 'Critico' = '#c53030'; 'Non verificato' = '#718096' }
-        $order = @{ 'Critico' = 0; 'Attenzione' = 1; 'Non verificato' = 2; 'Info' = 3; 'OK' = 4 }
+        # HTML (stile comune _lib/report) con confronto con la fotografia precedente
+        $prev = Get-PreviousSnapshot $Config "$base.json"
+        if ($prev) { Write-ToolLog "Confronto con $($prev.File) (punteggio $($prev.Meta.Punteggio))" }
+        [void](New-FotoHtml $Config $meta $checks $base $prev)
         $cnt = @{}
-        foreach ($k in $colors.Keys) { $cnt[$k] = @($checks | Where-Object { $_.Esito -eq $k }).Count }
-        $scoreColor = '#2f855a'
-        if ($score -lt 50) { $scoreColor = '#c53030' } elseif ($score -lt 75) { $scoreColor = '#dd6b20' }
-        $sb = New-Object System.Text.StringBuilder
-        [void]$sb.Append('<!DOCTYPE html><html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">')
-        [void]$sb.Append("<title>Fotografia AD - $(ConvertTo-HtmlText $ctx.Dns)</title><style>")
-        [void]$sb.Append('body{font-family:Segoe UI,Arial,sans-serif;margin:0;background:#f4f6f8;color:#1a202c}.wrap{max-width:1100px;margin:0 auto;padding:24px}')
-        [void]$sb.Append('h1{margin:0 0 4px}h2{margin:28px 0 10px;border-bottom:2px solid #cbd5e0;padding-bottom:4px}.muted{color:#718096;font-size:13px}')
-        [void]$sb.Append('.tiles{display:flex;gap:12px;flex-wrap:wrap;margin:18px 0}.tile{background:#fff;border-radius:8px;padding:14px 18px;min-width:120px;box-shadow:0 1px 2px rgba(0,0,0,.08)}.tile b{display:block;font-size:26px}')
-        [void]$sb.Append('.chk{background:#fff;border-radius:8px;margin:10px 0;padding:12px 16px;border-left:6px solid #cbd5e0;box-shadow:0 1px 2px rgba(0,0,0,.06)}')
-        [void]$sb.Append('.badge{display:inline-block;color:#fff;border-radius:4px;padding:1px 8px;font-size:12px;margin-right:8px}.id{font-family:Consolas,monospace;color:#4a5568;font-size:12px;margin-right:8px}')
-        [void]$sb.Append('.rem{margin-top:6px;font-size:14px}.rem b{color:#2d3748}details{margin-top:6px}summary{cursor:pointer;color:#3182ce;font-size:13px}pre{background:#f7fafc;padding:8px;white-space:pre-wrap;font-size:12px;max-height:320px;overflow:auto}')
-        [void]$sb.Append('table{border-collapse:collapse;width:100%;background:#fff}td,th{padding:6px 10px;border-bottom:1px solid #e2e8f0;text-align:left;font-size:14px}</style></head><body><div class="wrap">')
-        [void]$sb.Append("<h1>Fotografia di sicurezza Active Directory</h1><div class=`"muted`">Dominio <b>$(ConvertTo-HtmlText $ctx.Dns)</b> - DC $(ConvertTo-HtmlText $ctx.Dc) - $($meta.Data) - eseguito da $(ConvertTo-HtmlText $meta.Eseguito) su $(ConvertTo-HtmlText $env:COMPUTERNAME) - $($Tool.Title) $($Tool.Version)</div>")
-        [void]$sb.Append("<div class=`"tiles`"><div class=`"tile`"><b style=`"color:$scoreColor`">$score/100</b>Punteggio</div>")
-        foreach ($k in @('Critico', 'Attenzione', 'Non verificato', 'Info', 'OK')) { [void]$sb.Append("<div class=`"tile`"><b style=`"color:$($colors[$k])`">$($cnt[$k])</b>$k</div>") }
-        [void]$sb.Append('</div>')
-        # riepilogo per categoria
-        [void]$sb.Append('<table><tr><th>Categoria</th><th>Critico</th><th>Attenzione</th><th>Punti di rischio</th></tr>')
-        foreach ($g in @($checks | Group-Object Categoria)) {
-            $gc = @($g.Group | Where-Object { $_.Esito -eq 'Critico' }).Count
-            $ga = @($g.Group | Where-Object { $_.Esito -eq 'Attenzione' }).Count
-            $gp = [int](($g.Group | Measure-Object -Property Punti -Sum).Sum)
-            [void]$sb.Append("<tr><td>$(ConvertTo-HtmlText $g.Name)</td><td>$gc</td><td>$ga</td><td>$gp</td></tr>")
-        }
-        [void]$sb.Append('</table>')
-        foreach ($g in @($checks | Group-Object Categoria)) {
-            [void]$sb.Append("<h2>$(ConvertTo-HtmlText $g.Name)</h2>")
-            foreach ($c in @($g.Group | Sort-Object { $order[$_.Esito] }, Id)) {
-                $col = $colors[$c.Esito]
-                if (-not $col) { $col = '#718096' }
-                [void]$sb.Append("<div class=`"chk`" style=`"border-left-color:$col`"><span class=`"badge`" style=`"background:$col`">$(ConvertTo-HtmlText $c.Esito)</span><span class=`"id`">$(ConvertTo-HtmlText $c.Id)</span><b>$(ConvertTo-HtmlText $c.Titolo)</b>")
-                if ($c.Punti) { [void]$sb.Append(" <span class=`"muted`">($($c.Punti) punti)</span>") }
-                [void]$sb.Append("<div>$(ConvertTo-HtmlText $c.Sintesi)</div>")
-                if ($c.Remediation -and $c.Esito -ne 'OK') { [void]$sb.Append("<div class=`"rem`"><b>Cosa fare:</b> $(ConvertTo-HtmlText $c.Remediation)</div>") }
-                $ev = @($c.Evidenze)
-                if ($ev.Count) { [void]$sb.Append("<details><summary>Evidenze ($($ev.Count))</summary><pre>$(ConvertTo-HtmlText ($ev -join "`n"))</pre></details>") }
-                [void]$sb.Append('</div>')
-            }
-        }
-        [void]$sb.Append("<p class=`"muted`">Strumento in sola lettura: nessuna modifica e' stata fatta al dominio. File: $(ConvertTo-HtmlText $base).json / _controlli.csv / _evidenze.csv</p></div></body></html>")
-        [System.IO.File]::WriteAllText("$base.html", $sb.ToString(), (New-Object System.Text.UTF8Encoding($true)))
+        foreach ($k in @('Critico', 'Attenzione')) { $cnt[$k] = @($checks | Where-Object { $_.Esito -eq $k }).Count }
         Write-ToolLog ('Punteggio {0}/100 (rischio {1} punti) - Critici {2}, Attenzione {3}' -f $score, $risk, $cnt['Critico'], $cnt['Attenzione']) 'STEP'
         Write-ToolLog "Report HTML: $base.html" 'OK'
         "$base.html"
@@ -1132,7 +1100,9 @@ public static extern bool GetDiskFreeSpaceEx(string lpDirectoryName, out ulong l
 
     function Get-RunDir($Config) {
         if (-not $script:RunDir) {
-            $script:RunDir = Join-Path ([string]$Config.OutputDir) ('Hardening_{0}_{1}' -f (Get-AdContext $Config).Dns, (Get-Date -Format 'yyyyMMdd_HHmmss'))
+            $prefix = 'Hardening'
+            if ([string]$Config.Mode -eq 'Ripristino') { $prefix = 'Ripristino' }
+            $script:RunDir = Join-Path ([string]$Config.OutputDir) ('{0}_{1}_{2}' -f $prefix, (Get-AdContext $Config).Dns, (Get-Date -Format 'yyyyMMdd_HHmmss'))
             New-Item -ItemType Directory -Path $script:RunDir -Force | Out-Null
         }
         $script:RunDir
@@ -1396,6 +1366,18 @@ public static extern bool GetDiskFreeSpaceEx(string lpDirectoryName, out ulong l
             @{ Id = 'HD-DC-LOGS'; Title = "Registri di sicurezza e PowerShell sui DC (Security $($Config.SecurityLogMaxMB) MB)"; Impact = 'Basso'; Gpo = 'DC Audit'; Scope = 'DC'
                Values = @(@('HKLM\Software\Policies\Microsoft\Windows\EventLog\Security', 'MaxSize', 'DWord', $logKb), @('HKLM\Software\Microsoft\Windows\CurrentVersion\Policies\System\Audit', 'ProcessCreationIncludeCmdLine_Enabled', 'DWord', 1), @('HKLM\Software\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging', 'EnableScriptBlockLogging', 'DWord', 1), @('HKLM\SYSTEM\CurrentControlSet\Control\Lsa', 'SCENoApplyLegacyAuditPolicy', 'DWord', 1))
                Undo = 'Rimuovere i valori dalla GPO DC Audit.' }
+            @{ Id = 'HD-DC-NTLMAUDIT'; Title = 'Audit dell''uso di NTLM sui DC (prima di restringerlo)'; Impact = 'Basso'; Gpo = 'DC Audit'; Scope = 'DC'
+               Values = @(@('HKLM\SYSTEM\CurrentControlSet\Services\Netlogon\Parameters', 'AuditNTLMInDomain', 'DWord', 7), @('HKLM\SYSTEM\CurrentControlSet\Control\Lsa\MSV1_0', 'AuditReceivingNTLMTraffic', 'DWord', 2))
+               Undo = 'Rimuovere i valori dalla GPO DC Audit. Eventi in Applicazioni e servizi > Microsoft > Windows > NTLM > Operational (8001-8004).' }
+            @{ Id = 'HD-MB-NTLMAUDIT'; Title = 'Audit dell''uso di NTLM su server e client'; Impact = 'Basso'; Gpo = 'Member Hardening'; Scope = 'Member'
+               Values = @(@('HKLM\SYSTEM\CurrentControlSet\Control\Lsa\MSV1_0', 'AuditReceivingNTLMTraffic', 'DWord', 2), @('HKLM\SYSTEM\CurrentControlSet\Control\Lsa\MSV1_0', 'RestrictSendingNTLMTraffic', 'DWord', 1))
+               Undo = 'Rimuovere i valori dalla GPO Member Hardening.' }
+            @{ Id = 'HD-MB-CREDGUARD'; Title = 'Credential Guard su server e client (senza blocco UEFI)'; Impact = 'Medio'; Gpo = 'Member Hardening'; Scope = 'Member'
+               Values = @(@('HKLM\SOFTWARE\Policies\Microsoft\Windows\DeviceGuard', 'EnableVirtualizationBasedSecurity', 'DWord', 1), @('HKLM\SOFTWARE\Policies\Microsoft\Windows\DeviceGuard', 'RequirePlatformSecurityFeatures', 'DWord', 1), @('HKLM\SOFTWARE\Policies\Microsoft\Windows\DeviceGuard', 'LsaCfgFlags', 'DWord', 2))
+               Undo = 'Rimuovere i valori dalla GPO e riavviare. Richiede UEFI, Secure Boot e virtualizzazione; non usare sui DC. Incompatibile con delega non vincolata, NTLMv1, DES.' }
+            @{ Id = 'HD-MB-RCG'; Title = 'Remote Credential Guard / Restricted Admin per RDP'; Impact = 'Basso'; Gpo = 'Member Hardening'; Scope = 'Member'
+               Values = @(, @('HKLM\SOFTWARE\Policies\Microsoft\Windows\CredentialsDelegation', 'AllowProtectedCreds', 'DWord', 1))
+               Undo = 'Rimuovere AllowProtectedCreds dalla GPO. Uso: mstsc /remoteGuard dai PC amministrativi.' }
             @{ Id = 'HD-MB-SMB1'; Title = 'SMBv1 disattivato su server e client'; Impact = 'Medio'; Gpo = 'Member Hardening'; Scope = 'Member'
                Values = @(@('HKLM\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters', 'SMB1', 'DWord', 0), @('HKLM\SYSTEM\CurrentControlSet\Services\mrxsmb10', 'Start', 'DWord', 4))
                Undo = 'Rimuovere i valori dalla GPO Member Hardening (verificare prima stampanti/NAS che usano SMBv1).' }
@@ -2003,38 +1985,399 @@ public static extern bool GetDiskFreeSpaceEx(string lpDirectoryName, out ulong l
         foreach ($f in @($Results | Where-Object { -not $_.Dati })) {
             $acts += [pscustomobject]@{ Id = $f.Utente; Categoria = $f.Origine; Titolo = $f.Utente; Impatto = ''; Richiede = ''; Prima = ''; Piano = ''; Esito = $f.Esito; Messaggio = $f.Messaggio; Dopo = ''; Annullamento = '' }
         }
+        $restore = [string]$Config.Mode -eq 'Ripristino'
         $dir = if ($script:RunDir) { $script:RunDir } else { Get-RunDir $Config }
         $mode = if ($Config.DryRun) { 'SIMULAZIONE - nessuna modifica eseguita' } else { 'ESECUZIONE REALE' }
-        $base = Join-Path $dir 'hardening'
+        $name = if ($restore) { 'ripristino' } else { 'hardening' }
+        $base = Join-Path $dir $name
         $acts | Export-Csv -LiteralPath "$base.csv" -NoTypeInformation -Delimiter ';' -Encoding UTF8
         [System.IO.File]::WriteAllText("$base.json", ([pscustomobject]@{ Dominio = $ctx.Dns; DC = $ctx.Dc; Data = (Get-Date).ToString('s'); Modalita = $mode; Eseguito = "$env:USERDOMAIN\$env:USERNAME"; Azioni = $acts } | ConvertTo-Json -Depth 6), (New-Object System.Text.UTF8Encoding($true)))
-        $colors = @{ 'OK' = '#2f855a'; 'Simulato' = '#3182ce'; 'Attenzione' = '#dd6b20'; 'Fallito' = '#c53030'; 'Annullato' = '#718096' }
-        $sb = New-Object System.Text.StringBuilder
-        [void]$sb.Append('<!DOCTYPE html><html lang="it"><head><meta charset="utf-8"><title>Hardening AD - ' + (ConvertTo-HtmlText $ctx.Dns) + '</title><style>')
-        [void]$sb.Append('body{font-family:Segoe UI,Arial,sans-serif;margin:0;background:#f4f6f8;color:#1a202c}.wrap{max-width:1100px;margin:0 auto;padding:24px}.muted{color:#718096;font-size:13px}')
-        [void]$sb.Append('.a{background:#fff;border-radius:8px;margin:10px 0;padding:12px 16px;border-left:6px solid #cbd5e0}.badge{display:inline-block;color:#fff;border-radius:4px;padding:1px 8px;font-size:12px;margin-right:8px}')
-        [void]$sb.Append('.id{font-family:Consolas,monospace;color:#4a5568;font-size:12px;margin-right:8px}.row{font-size:14px;margin-top:4px}.row b{color:#2d3748}</style></head><body><div class="wrap">')
-        [void]$sb.Append("<h1>Hardening Active Directory</h1><div class=`"muted`">Dominio <b>$(ConvertTo-HtmlText $ctx.Dns)</b> - DC $(ConvertTo-HtmlText $ctx.Dc) - $((Get-Date).ToString('yyyy-MM-dd HH:mm')) - $(ConvertTo-HtmlText "$env:USERDOMAIN\$env:USERNAME") - <b>$mode</b></div>")
-        foreach ($x in $acts) {
-            $c = $colors[[string]$x.Esito]; if (-not $c) { $c = '#718096' }
-            [void]$sb.Append("<div class=`"a`" style=`"border-left-color:$c`"><span class=`"badge`" style=`"background:$c`">$(ConvertTo-HtmlText $x.Esito)</span><span class=`"id`">$(ConvertTo-HtmlText $x.Id)</span><b>$(ConvertTo-HtmlText $x.Titolo)</b> <span class=`"muted`">impatto $(ConvertTo-HtmlText $x.Impatto)</span>")
-            foreach ($r in @(@('Prima', $x.Prima), @('Piano', $x.Piano), @('Risultato', $x.Messaggio), @('Dopo', $x.Dopo), @('Come annullare', $x.Annullamento))) {
-                if ($r[1]) { [void]$sb.Append("<div class=`"row`"><b>$($r[0]):</b> $(ConvertTo-HtmlText $r[1])</div>") }
-            }
-            [void]$sb.Append('</div>')
+        $hero = New-Object System.Collections.Generic.List[string]
+        $hero.Add((New-RptKpi $acts.Count 'Azioni elaborate'))
+        foreach ($e in @('OK', 'Simulato', 'Attenzione', 'Fallito', 'Annullato')) {
+            $n = @($acts | Where-Object { $_.Esito -eq $e }).Count
+            if ($n) { $hero.Add((New-RptKpi $n $e (Get-RptTone $e))) }
         }
-        [void]$sb.Append("<p class=`"muted`">Backup dello stato precedente: file *.backup.json in $(ConvertTo-HtmlText $dir)</p></div></body></html>")
-        [System.IO.File]::WriteAllText("$base.html", $sb.ToString(), (New-Object System.Text.UTF8Encoding($true)))
-        Write-ToolLog "Report di hardening: $base.html" 'OK'
+        $sb = New-Object System.Text.StringBuilder
+        [void]$sb.Append("<section class=`"card`" data-filter><h2>Azioni <span class=`"n`"></span></h2><div class=`"toolbar`"><input type=`"search`" placeholder=`"Cerca...`">")
+        foreach ($g in @($acts | Group-Object Esito)) { [void]$sb.Append("<span class=`"chip`" data-v=`"$(ConvertTo-RptHtml $g.Name)`">$(ConvertTo-RptHtml $g.Name)<span class=`"c`">$($g.Count)</span></span>") }
+        [void]$sb.Append('</div>')
+        foreach ($x in $acts) {
+            $imp = ''
+            if ($x.Impatto) { $imp = "<span class=`"muted`">impatto $(ConvertTo-RptHtml $x.Impatto)</span>" }
+            [void]$sb.Append("<details class=`"item`" data-row data-s=`"$(ConvertTo-RptHtml $x.Esito)`"><summary>$(New-RptBadge ([string]$x.Esito))<span class=`"mono muted`">$(ConvertTo-RptHtml $x.Id)</span><span class=`"t`">$(ConvertTo-RptHtml $x.Titolo)</span>$imp</summary><div class=`"det`"><div class=`"kv`">")
+            foreach ($r in @(@('Categoria', $x.Categoria), @('Prima', $x.Prima), @('Piano', $x.Piano), @('Risultato', $x.Messaggio), @('Dopo', $x.Dopo), @('Come annullare', $x.Annullamento), @('Richiede', $x.Richiede))) {
+                if ($r[1]) { [void]$sb.Append("<b>$($r[0])</b><span>$(ConvertTo-RptHtml $r[1])</span>") }
+            }
+            [void]$sb.Append('</div></div></details>')
+        }
+        [void]$sb.Append("</section><p class=`"muted`">Backup dello stato precedente: file *.backup.json in $(ConvertTo-RptHtml $dir). Per annullare: modalita' Ripristino su questa cartella.</p>")
+        $title = if ($restore) { 'Ripristino hardening Active Directory' } else { 'Hardening Active Directory' }
+        $html = New-RptDocument -Title "$title - $($ctx.Dns)" -Subtitle "DC $($ctx.Dc) - $((Get-Date).ToString('dd/MM/yyyy HH:mm')) - $env:USERDOMAIN\$env:USERNAME - $mode" -Badge 'AD' -HeroHtml ($hero -join '') -BodyHtml $sb.ToString()
+        [System.IO.File]::WriteAllText("$base.html", $html, (New-Object System.Text.UTF8Encoding($true)))
+        Write-ToolLog "Report: $base.html" 'OK'
         "$base.html"
+    }
+    #endregion
+    #region SPECIFICO: controlli ADCS e ACL, confronto tra fotografie, report, ripristino dai backup
+
+    # ACL (DACL) di un oggetto, letta con DirectorySearcher (SecurityMasks Dacl: basta un utente di dominio)
+    function Get-ObjectAcl($Config, [string]$Dn) {
+        $ctx = Get-AdContext $Config
+        $de = [adsi]"LDAP://$($ctx.Dc)/$($Dn.Replace('/', '\/'))"
+        $ds = New-Object System.DirectoryServices.DirectorySearcher($de, '(objectClass=*)', [string[]]@('nTSecurityDescriptor'), [System.DirectoryServices.SearchScope]::Base)
+        $ds.SecurityMasks = [System.DirectoryServices.SecurityMasks]::Dacl
+        $r = $ds.FindOne()
+        if (-not $r -or -not $r.Properties['ntsecuritydescriptor'].Count) { return @() }
+        $sd = New-Object System.DirectoryServices.ActiveDirectorySecurity
+        $sd.SetSecurityDescriptorBinaryForm([byte[]]$r.Properties['ntsecuritydescriptor'][0])
+        @($sd.GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier]))
+    }
+
+    # Diritto completo presente (i diritti generici sono combinazioni di bit)
+    function Test-Right($Rule, [string]$Name) {
+        $v = [int][System.DirectoryServices.ActiveDirectoryRights]$Name
+        ([int]$Rule.ActiveDirectoryRights -band $v) -eq $v
+    }
+
+    function Get-SidLabel([string]$Sid) {
+        $n = $null
+        try { $n = Resolve-SidAccount $Sid } catch { }
+        if ($n) { "$n ($Sid)" } else { $Sid }
+    }
+
+    # Principali che per impostazione predefinita hanno diritti estesi sul dominio
+    $script:DefaultAdminSidRx = '^S-1-5-(18|9)$|^S-1-5-32-544$|-(498|512|516|518|519)$'
+    $script:LowPrivSids = @('S-1-1-0', 'S-1-5-11', 'S-1-5-7', 'S-1-5-32-545')
+
+    function Get-AdChecksExtra {
+        @(
+            @{ Id = 'A-ESC-01'; Cat = 'Servizi certificati (ADCS)'; Title = 'Modelli di certificato sfruttabili (ESC1-ESC4)'; Weight = 20; Needs = 'Utente di dominio'; Run = {
+                param($Config)
+                $ctx = Get-AdContext $Config
+                $pks = "CN=Public Key Services,CN=Services,$($ctx.ConfigDn)"
+                $cas = @(Search-Ldap $Config '(objectClass=pKIEnrollmentService)' @('cn', 'dNSHostName', 'certificateTemplates') "CN=Enrollment Services,$pks" 'OneLevel')
+                if (-not $cas.Count) { return New-CheckResult 'OK' 'Nessuna CA aziendale registrata in Active Directory' }
+                $published = @($cas | ForEach-Object { @($_.certificateTemplates) } | Where-Object { $_ } | Select-Object -Unique)
+                $tpls = @(Search-Ldap $Config '(objectClass=pKICertificateTemplate)' @('cn', 'distinguishedName', 'msPKI-Certificate-Name-Flag', 'msPKI-Enrollment-Flag', 'msPKI-RA-Signature', 'pKIExtendedKeyUsage', 'msPKI-Certificate-Application-Policy') "CN=Certificate Templates,$pks" 'OneLevel')
+                $low = @($script:LowPrivSids) + @("$($ctx.Sid)-513", "$($ctx.Sid)-514", "$($ctx.Sid)-515")
+                $enrollG = [guid]'0e10c968-78fb-11d2-90d4-00c04f79dc55'
+                $autoG = [guid]'a05b8cc2-17bc-4802-a710-e7c15ab866a2'
+                $authEku = @('1.3.6.1.5.5.7.3.2', '1.3.6.1.4.1.311.20.2.2', '1.3.6.1.5.2.3.4', '2.5.29.37.0')
+                $ev = @(); $bad = 0
+                foreach ($t in $tpls) {
+                    if ($published -notcontains $t.cn) { continue }
+                    $rules = @(Get-ObjectAcl $Config ([string]$t.distinguishedName) | Where-Object { $_.AccessControlType -eq 'Allow' -and $low -contains $_.IdentityReference.Value })
+                    $canEnroll = @($rules | Where-Object { (Test-Right $_ 'GenericAll') -or ((Test-Right $_ 'ExtendedRight') -and ($_.ObjectType -eq $enrollG -or $_.ObjectType -eq $autoG -or $_.ObjectType -eq [guid]::Empty)) }).Count -gt 0
+                    $canWrite = @($rules | Where-Object { (Test-Right $_ 'GenericAll') -or (Test-Right $_ 'WriteDacl') -or (Test-Right $_ 'WriteOwner') -or ((Test-Right $_ 'WriteProperty') -and $_.ObjectType -eq [guid]::Empty) }).Count -gt 0
+                    $eku = @(@($t.pKIExtendedKeyUsage) + @($t.'msPKI-Certificate-Application-Policy') | Where-Object { $_ } | Select-Object -Unique)
+                    $approval = ([int]$t.'msPKI-Enrollment-Flag' -band 2) -ne 0
+                    $ra = [int]$t.'msPKI-RA-Signature' -gt 0
+                    $supplies = ([int]$t.'msPKI-Certificate-Name-Flag' -band 1) -ne 0
+                    $iss = @()
+                    if ($canEnroll -and -not $approval -and -not $ra) {
+                        if ($supplies -and ($eku.Count -eq 0 -or @($eku | Where-Object { $authEku -contains $_ }).Count)) { $iss += 'ESC1: soggetto scelto dal richiedente e uso per autenticazione' }
+                        if ($eku.Count -eq 0 -or $eku -contains '2.5.29.37.0') { $iss += 'ESC2: uso qualsiasi o nessun EKU' }
+                        if ($eku -contains '1.3.6.1.4.1.311.20.2.1') { $iss += 'ESC3: agente di richiesta certificati' }
+                    }
+                    if ($canWrite) { $iss += 'ESC4: utenti non privilegiati possono modificare il modello' }
+                    if ($iss.Count) { $bad++; $ev += "$($t.cn): $($iss -join '; ')" }
+                }
+                $ev += @($cas | ForEach-Object { "CA: $($_.cn) ($($_.dNSHostName))" })
+                if ($bad) { return New-CheckResult 'Critico' "$bad modelli pubblicati permettono a utenti comuni di ottenere certificati validi per altri utenti, anche amministratori" $ev 'Per ogni modello segnalato: soggetto costruito da AD (non "fornito nella richiesta"), approvazione del responsabile o firma autorizzata, registrazione solo per gruppi dedicati, nessun permesso di scrittura agli utenti comuni; non pubblicare i modelli inutilizzati.' }
+                New-CheckResult 'OK' "$(@($tpls | Where-Object { $published -contains $_.cn }).Count) modelli pubblicati su $($cas.Count) CA: nessuna configurazione ESC1-ESC4" $ev
+            } }
+
+            @{ Id = 'C-DCSYNC-01'; Cat = 'Configurazione del dominio'; Title = 'Diritti di replica (DCSync) e controllo del dominio'; Weight = 20; Needs = 'Utente di dominio'; Run = {
+                param($Config)
+                $ctx = Get-AdContext $Config
+                $repl = @([guid]'1131f6ad-9c07-11d1-f79f-00c04fc2dcd2', [guid]'89e95b76-444d-4c62-991a-0facbeda640c')
+                $rules = @(Get-ObjectAcl $Config $ctx.Dn | Where-Object { $_.AccessControlType -eq 'Allow' -and $_.IdentityReference.Value -notmatch $script:DefaultAdminSidRx })
+                $bad = @($rules | Where-Object {
+                    (Test-Right $_ 'GenericAll') -or (Test-Right $_ 'WriteDacl') -or (Test-Right $_ 'WriteOwner') -or
+                    ((Test-Right $_ 'ExtendedRight') -and ($repl -contains $_.ObjectType -or $_.ObjectType -eq [guid]::Empty))
+                })
+                if (-not $bad.Count) { return New-CheckResult 'OK' 'Replica e controllo completo del dominio solo ai gruppi predefiniti' }
+                $ev = @($bad | Group-Object { $_.IdentityReference.Value } | ForEach-Object { "$(Get-SidLabel $_.Name): $(($_.Group | ForEach-Object { [string]$_.ActiveDirectoryRights }) -join ', ')" })
+                $sync = @($ev | Where-Object { $_ -match 'MSOL_|AAD_|Sync_' })
+                if ($sync.Count -eq $ev.Count) { return New-CheckResult 'Attenzione' "Diritti di replica a $($ev.Count) account di sincronizzazione (Entra Connect): leciti ma da proteggere come Tier 0" $ev 'Trattare l''account e il server di sincronizzazione come Tier 0: password lunga, nessun accesso interattivo, server protetto come un DC.' }
+                New-CheckResult 'Critico' "$($ev.Count) principali non standard possono replicare i segreti (DCSync) o controllare l'oggetto dominio" $ev 'Rimuovere i diritti "Replicating Directory Changes All" e i permessi di controllo completo concessi a utenti o gruppi non amministrativi; se servono a un prodotto, isolarne l''account come Tier 0.'
+            } }
+
+            @{ Id = 'C-ADMSD-01'; Cat = 'Configurazione del dominio'; Title = 'Permessi su AdminSDHolder'; Weight = 15; Needs = 'Utente di dominio'; Run = {
+                param($Config)
+                $ctx = Get-AdContext $Config
+                $rules = @(Get-ObjectAcl $Config "CN=AdminSDHolder,CN=System,$($ctx.Dn)" | Where-Object { $_.AccessControlType -eq 'Allow' -and $_.IdentityReference.Value -notmatch $script:DefaultAdminSidRx })
+                $bad = @($rules | Where-Object { (Test-Right $_ 'GenericAll') -or (Test-Right $_ 'WriteDacl') -or (Test-Right $_ 'WriteOwner') -or ((Test-Right $_ 'WriteProperty') -and $_.ObjectType -eq [guid]::Empty) })
+                if (-not $bad.Count) { return New-CheckResult 'OK' 'Nessun permesso di modifica anomalo su AdminSDHolder' }
+                $ev = @($bad | Group-Object { $_.IdentityReference.Value } | ForEach-Object { "$(Get-SidLabel $_.Name): $(($_.Group | ForEach-Object { [string]$_.ActiveDirectoryRights }) -join ', ')" })
+                New-CheckResult 'Critico' "$($ev.Count) principali non standard possono modificare AdminSDHolder: i loro permessi vengono copiati su tutti gli account privilegiati ogni ora" $ev 'Rimuovere le voci anomale da CN=AdminSDHolder,CN=System (tipica persistenza dopo una compromissione): verificare chi le ha aggiunte.'
+            } }
+        )
+    }
+
+    # ------------------------------------------------------------------ confronto con una fotografia precedente
+
+    function Get-PreviousSnapshot($Config, [string]$CurrentJson) {
+        $ctx = Get-AdContext $Config
+        $file = [string]$Config.CompareWith
+        if (-not $file) {
+            $file = @(Get-ChildItem -LiteralPath ([string]$Config.OutputDir) -Filter ('ADAssessment_{0}_*.json' -f $ctx.Dns) -File -ErrorAction SilentlyContinue |
+                Where-Object { $_.FullName -ne $CurrentJson } | Sort-Object Name -Descending | Select-Object -First 1 | ForEach-Object { $_.FullName })[0]
+        }
+        if (-not $file -or -not (Test-Path -LiteralPath $file)) { return $null }
+        try {
+            $j = Get-Content -LiteralPath $file -Raw -Encoding UTF8 | ConvertFrom-Json
+            [pscustomobject]@{ File = $file; Meta = $j.Meta; Checks = @($j.Controlli) }
+        } catch { Write-ToolLog "Fotografia precedente non leggibile ($file): $($_.Exception.Message)" 'WARN'; $null }
+    }
+
+    function Get-SnapshotDiff($Prev, $Checks) {
+        $sev = @{ 'OK' = 0; 'Info' = 0; 'Attenzione' = 1; 'Critico' = 2 }
+        $rows = @()
+        foreach ($c in $Checks) {
+            $p = @($Prev.Checks | Where-Object { $_.Id -eq $c.Id })[0]
+            $before = if ($p) { [string]$p.Esito } else { '(nuovo controllo)' }
+            $var = 'Invariato'
+            if ($p -and $sev.ContainsKey($before) -and $sev.ContainsKey([string]$c.Esito)) {
+                $a = $sev[$before]; $b = $sev[[string]$c.Esito]
+                if ($b -gt $a -and $a -eq 0) { $var = 'Nuovo rischio' } elseif ($b -gt $a) { $var = 'Peggiorato' } elseif ($b -lt $a -and $b -eq 0) { $var = 'Risolto' } elseif ($b -lt $a) { $var = 'Migliorato' }
+            } elseif (-not $p) { $var = 'Nuovo controllo' }
+            $newEv = 0
+            if ($p) { $old = @($p.Evidenze); $newEv = @(@($c.Evidenze) | Where-Object { $old -notcontains $_ }).Count }
+            if ($var -eq 'Invariato' -and $newEv -gt 0 -and $sev[[string]$c.Esito] -gt 0) { $var = 'Nuove evidenze' }
+            $rows += [pscustomobject]@{ Id = $c.Id; Titolo = $c.Titolo; Prima = $before; Ora = $c.Esito; Variazione = $var; NuoveEvidenze = $newEv }
+        }
+        , $rows
+    }
+
+    # ------------------------------------------------------------------ report HTML della fotografia (stile _lib/report)
+
+    function New-FotoHtml($Config, $Meta, $Checks, [string]$Base, $Prev) {
+        $tone = @{ 'OK' = 'ok'; 'Info' = 'info'; 'Attenzione' = 'warn'; 'Critico' = 'err'; 'Non verificato' = 'neutral' }
+        $order = @{ 'Critico' = 0; 'Attenzione' = 1; 'Non verificato' = 2; 'Info' = 3; 'OK' = 4 }
+        $st = 'ok'
+        if ($Meta.Punteggio -lt 50) { $st = 'err' } elseif ($Meta.Punteggio -lt 75) { $st = 'warn' }
+        $hero = New-Object System.Collections.Generic.List[string]
+        $hero.Add((New-RptScore ([int]$Meta.Punteggio) 'Punteggio' $st))
+        foreach ($k in @('Critico', 'Attenzione', 'Non verificato', 'Info', 'OK')) {
+            $hero.Add((New-RptKpi (@($Checks | Where-Object { $_.Esito -eq $k }).Count) $k $tone[$k]))
+        }
+        $diffRows = $null
+        if ($Prev) {
+            $delta = [int]$Meta.Punteggio - [int]$Prev.Meta.Punteggio
+            $sign = ''
+            if ($delta -gt 0) { $sign = '+' }
+            $dt = 'neutral'
+            if ($delta -gt 0) { $dt = 'ok' } elseif ($delta -lt 0) { $dt = 'err' }
+            $hero.Add((New-RptKpi "$sign$delta" "rispetto al $($Prev.Meta.Data)" $dt))
+            $diffRows = Get-SnapshotDiff $Prev $Checks
+        }
+        $body = New-Object System.Text.StringBuilder
+        # riepilogo per categoria
+        $cat = @(foreach ($g in @($Checks | Group-Object Categoria)) {
+            [pscustomobject]@{
+                Categoria = $g.Name; Controlli = $g.Count
+                Critici = @($g.Group | Where-Object { $_.Esito -eq 'Critico' }).Count
+                Attenzione = @($g.Group | Where-Object { $_.Esito -eq 'Attenzione' }).Count
+                Punti = [int](($g.Group | Measure-Object -Property Punti -Sum).Sum)
+            }
+        })
+        [void]$body.Append((New-RptTable -Title 'Rischio per categoria' -Rows $cat -StatusColumn '' -Columns @(
+            @{ Name = 'Categoria'; Header = 'Categoria' }, @{ Name = 'Controlli'; Header = 'Controlli'; Num = $true }, @{ Name = 'Critici'; Header = 'Critici'; Num = $true },
+            @{ Name = 'Attenzione'; Header = 'Attenzione'; Num = $true }, @{ Name = 'Punti'; Header = 'Punti di rischio'; Num = $true })))
+        if ($diffRows) {
+            $changed = @($diffRows | Where-Object { $_.Variazione -ne 'Invariato' })
+            $note = "Confronto con $([System.IO.Path]::GetFileName($Prev.File)): $($changed.Count) variazioni"
+            [void]$body.Append((New-RptTable -Title $note -Rows $changed -StatusColumn 'Variazione' -Columns @(
+                @{ Name = 'Variazione'; Header = 'Variazione'; Badge = $true }, @{ Name = 'Id'; Header = 'ID'; Mono = $true }, @{ Name = 'Titolo'; Header = 'Controllo' },
+                @{ Name = 'Prima'; Header = 'Prima'; Badge = $true }, @{ Name = 'Ora'; Header = 'Ora'; Badge = $true }, @{ Name = 'NuoveEvidenze'; Header = 'Nuove evidenze'; Num = $true })))
+        }
+        foreach ($g in @($Checks | Group-Object Categoria)) {
+            $items = New-Object System.Text.StringBuilder
+            foreach ($c in @($g.Group | Sort-Object { $order[$_.Esito] }, Id)) {
+                $t = $tone[[string]$c.Esito]
+                if (-not $t) { $t = 'neutral' }
+                $pts = ''
+                if ($c.Punti) { $pts = "<span class=`"muted`">$($c.Punti) punti</span>" }
+                [void]$items.Append("<details class=`"item`" data-row data-s=`"$(ConvertTo-RptHtml $c.Esito)`"><summary>$(New-RptBadge ([string]$c.Esito) $t)<span class=`"mono muted`">$(ConvertTo-RptHtml $c.Id)</span><span class=`"t`">$(ConvertTo-RptHtml $c.Titolo)</span>$pts</summary><div class=`"det`"><div class=`"kv`">")
+                [void]$items.Append("<b>Esito</b><span>$(ConvertTo-RptHtml $c.Sintesi)</span>")
+                if ($c.Remediation -and $c.Esito -ne 'OK') { [void]$items.Append("<b>Cosa fare</b><span>$(ConvertTo-RptHtml $c.Remediation)</span>") }
+                [void]$items.Append("<b>Richiede</b><span>$(ConvertTo-RptHtml $c.Richiede)</span></div>")
+                $ev = @($c.Evidenze)
+                if ($ev.Count) { [void]$items.Append("<div style=`"margin-top:10px`" class=`"mono`">$((@($ev) | ForEach-Object { ConvertTo-RptHtml $_ }) -join '<br>')</div>") }
+                [void]$items.Append('</div></details>')
+            }
+            [void]$body.Append("<section class=`"card`" data-filter><h2>$(ConvertTo-RptHtml $g.Name) <span class=`"n`"></span></h2><div class=`"toolbar`"><input type=`"search`" placeholder=`"Cerca nei controlli e nelle evidenze...`">")
+            foreach ($k in @('Critico', 'Attenzione', 'Non verificato', 'Info', 'OK')) {
+                $n = @($g.Group | Where-Object { $_.Esito -eq $k }).Count
+                if ($n) { [void]$body.Append("<span class=`"chip`" data-v=`"$k`">$k<span class=`"c`">$n</span></span>") }
+            }
+            [void]$body.Append("</div>$($items.ToString())</section>")
+        }
+        [void]$body.Append("<p class=`"muted`">Fotografia in sola lettura: nessuna modifica al dominio. File: $(ConvertTo-RptHtml $Base).json, _controlli.csv, _evidenze.csv</p>")
+        $sub = "Dominio $($Meta.Dominio) - DC $($Meta.DC) - $($Meta.Data) - $($Meta.Eseguito) su $($Meta.Da) - $($Tool.Title) $($Tool.Version)"
+        $html = New-RptDocument -Title "Fotografia di sicurezza Active Directory - $($Meta.Dominio)" -Subtitle $sub -Badge 'AD' -HeroHtml ($hero -join '') -BodyHtml $body.ToString()
+        [System.IO.File]::WriteAllText("$Base.html", $html, (New-Object System.Text.UTF8Encoding($true)))
+        "$Base.html"
+    }
+
+    # ------------------------------------------------------------------ ripristino dai backup dell'hardening
+
+    # Come si annulla ogni azione (Kind) e cosa non e' annullabile in automatico
+    function Get-RestoreKind([string]$Id) {
+        switch -Regex ($Id) {
+            '^HD-(SENSITIVE|ASREP|DES|REVERSIBLE|PWDNOTREQD|GUEST)$' { return 'Uac' }
+            '^HD-(DC|MB)-' { return 'GpoRegistry' }
+            '^HD-INACTIVE-' { return 'Inactive' }
+            '^HD-(PRE2K|SCHEMA)$' { return 'GroupReadd' }
+            '^HD-PROTUSERS$' { return 'GroupRemove' }
+            '^HD-MAQ$' { return 'Maq' }
+            '^HD-PWDPOL$' { return 'PwdPol' }
+            '^HD-ADMINPSO$' { return 'Pso' }
+            '^HD-ADMINCOUNT$' { return 'AdminCount' }
+            '^HD-(DC-AUDIT|LAPS-GPO|TIER-LOGON)$' { return 'GpoUnlink' }
+            default { return '' }
+        }
+    }
+
+    function Get-RestoreItems($Config) {
+        Initialize-Hardening $Config
+        $dir = [string]$Config.RestoreFolder
+        if (-not $dir -or -not (Test-Path -LiteralPath $dir)) { throw 'Indicare la cartella di un''esecuzione di hardening (Hardening_<dominio>_<data>) nel campo "Cartella da ripristinare".' }
+        Write-ToolLog "Ripristino - backup in $dir" 'STEP'
+        foreach ($f in @(Get-ChildItem -LiteralPath $dir -Filter '*.backup.json' -File | Sort-Object LastWriteTime -Descending)) {
+            $b = $null
+            try { $b = Get-Content -LiteralPath $f.FullName -Raw -Encoding UTF8 | ConvertFrom-Json } catch { }
+            $id = if ($b) { [string]$b.Id } else { $f.Name }
+            $kind = Get-RestoreKind $id
+            $state = 'Annullabile'
+            if (-not $b) { $state = 'Backup non leggibile' } elseif (-not $kind) { $state = 'Non annullabile in automatico (vedi report di hardening)' }
+            [pscustomobject]@{
+                Key = $f.FullName; Utente = $id; SID = ''; Origine = $f.Name
+                Id = $id; Categoria = 'Ripristino'; Controllo = "Annulla $id (backup del $(if ($b) { $b.Date } else { '?' }) di $(if ($b) { $b.By } else { '?' }))"
+                Peso = ''; Richiede = 'Domain Admins'; Stato = $state; Selectable = [bool]($b -and $kind); File = $f.FullName
+            }
+        }
+    }
+
+    function Invoke-RestoreItem($Config, $Item) {
+        Initialize-Hardening $Config
+        $ctx = Get-AdContext $Config
+        $b = Get-Content -LiteralPath $Item.Key -Raw -Encoding UTF8 | ConvertFrom-Json
+        $kind = Get-RestoreKind ([string]$b.Id)
+        $data = $b.Data
+        $plan = @()
+        $do = -not $Config.DryRun
+        switch ($kind) {
+            'Uac' {
+                foreach ($a in @($data)) {
+                    $plan += "$($a.Account): userAccountControl -> 0x$('{0:X}' -f [int]$a.OldUac)"
+                    if ($do) { $de = [adsi]"LDAP://$($ctx.Dc)/$(([string]$a.Dn).Replace('/', '\/'))"; $de.Properties['userAccountControl'].Value = [int]$a.OldUac; $de.CommitChanges() }
+                }
+            }
+            'GpoRegistry' {
+                foreach ($v in @($data)) {
+                    $g = Get-GPO -Name ([string]$v.Gpo) -ErrorAction Stop
+                    if ($null -eq $v.Old) {
+                        $plan += "$($v.Gpo): rimuovi $($v.Key)\$($v.Name)"
+                        if ($do) { Remove-GPRegistryValue -Guid $g.Id -Key $v.Key -ValueName $v.Name -ErrorAction SilentlyContinue | Out-Null }
+                    } else {
+                        $plan += "$($v.Gpo): $($v.Key)\$($v.Name) = $($v.Old)"
+                        if ($do) { Set-GPRegistryValue -Guid $g.Id -Key $v.Key -ValueName $v.Name -Type DWord -Value ([int]$v.Old) | Out-Null }
+                    }
+                }
+            }
+            'Inactive' {
+                foreach ($a in @($data)) {
+                    $cur = @(Search-Ldap $Config ('(sAMAccountName={0})' -f (ConvertTo-LdapValue ([string]$a.Account))) @('distinguishedName'))[0]
+                    if (-not $cur) { $plan += "$($a.Account): non trovato"; continue }
+                    $origParent = ([string]$a.Dn) -replace '^(?:[^,\\]|\\.)+,', ''
+                    $plan += "$($a.Account): riattiva, ripristina la descrizione" + $(if ([string]$cur.distinguishedName -ne [string]$a.Dn) { " e riporta in $origParent" } else { '' })
+                    if ($do) {
+                        $de = [adsi]"LDAP://$($ctx.Dc)/$(([string]$cur.distinguishedName).Replace('/', '\/'))"
+                        $de.Properties['userAccountControl'].Value = [int]$a.OldUac
+                        if ($a.Description) { $de.Properties['description'].Value = [string]$a.Description } else { $de.Properties['description'].Clear() }
+                        $de.CommitChanges()
+                        if ([string]$cur.distinguishedName -ne [string]$a.Dn) { Move-ADObject -Identity ([string]$cur.distinguishedName) -TargetPath $origParent }
+                    }
+                }
+            }
+            'GroupReadd' {
+                $gdn = if ([string]$b.Id -eq 'HD-SCHEMA') { Get-SidDn $Config "$($ctx.Sid)-518" } else { Get-SidDn $Config 'S-1-5-32-554' }
+                $de = [adsi]"LDAP://$($ctx.Dc)/$($gdn.Replace('/', '\/'))"
+                foreach ($m in @($data.Removed)) {
+                    $plan += "Riaggiungi $m"
+                    if ($do -and -not ($de.Properties['member'] -contains [string]$m)) { [void]$de.Properties['member'].Add([string]$m) }
+                }
+                if ($do) { $de.CommitChanges() }
+            }
+            'GroupRemove' {
+                $de = [adsi]"LDAP://$($ctx.Dc)/$((Get-SidDn $Config "$($ctx.Sid)-525").Replace('/', '\/'))"
+                foreach ($m in @($data.Added)) {
+                    $plan += "Togli da Protected Users: $m"
+                    if ($do -and ($de.Properties['member'] -contains [string]$m)) { [void]$de.Properties['member'].Remove([string]$m) }
+                }
+                if ($do) { $de.CommitChanges() }
+            }
+            'Maq' {
+                $plan += "ms-DS-MachineAccountQuota = $($data.Old)"
+                if ($do) { $de = [adsi]"LDAP://$($ctx.Dc)/$($ctx.Dn)"; $de.Properties['ms-DS-MachineAccountQuota'].Value = [int]$data.Old; $de.CommitChanges() }
+            }
+            'PwdPol' {
+                $plan += "Policy di dominio: minimo $($data.MinPasswordLength), complessita' $($data.ComplexityEnabled), blocco $($data.LockoutThreshold), cronologia $($data.PasswordHistoryCount)"
+                if ($do) {
+                    Set-ADDefaultDomainPasswordPolicy -Identity $ctx.Dn -MinPasswordLength ([int]$data.MinPasswordLength) -ComplexityEnabled ([bool]$data.ComplexityEnabled) -ReversibleEncryptionEnabled ([bool]$data.ReversibleEncryptionEnabled) `
+                        -LockoutThreshold ([int]$data.LockoutThreshold) -LockoutDuration ([TimeSpan]::Parse([string]$data.LockoutDuration)) -LockoutObservationWindow ([TimeSpan]::Parse([string]$data.LockoutObservationWindow)) -PasswordHistoryCount ([int]$data.PasswordHistoryCount)
+                }
+            }
+            'Pso' {
+                $name = [string]$data.Pso
+                if ($name -notlike "$($Config.GpoPrefix)-*") { throw "La PSO $name non e' stata creata da questo strumento: non la elimino." }
+                $plan += "Elimina la PSO $name"
+                if ($do) { Remove-ADFineGrainedPasswordPolicy -Identity $name -Confirm:$false }
+            }
+            'AdminCount' {
+                foreach ($dn in @($data)) {
+                    $plan += "adminCount = 1 su $dn"
+                    if ($do) { $de = [adsi]"LDAP://$($ctx.Dc)/$(([string]$dn).Replace('/', '\/'))"; $de.Properties['adminCount'].Value = 1; $de.CommitChanges() }
+                }
+            }
+            'GpoUnlink' {
+                $names = @(@($data.Gpo) | ForEach-Object { ([string]$_ -split ':')[0].Trim() } | Where-Object { $_ })
+                foreach ($n in $names) {
+                    $g = $null
+                    try { $g = Get-GPO -Name $n -ErrorAction Stop } catch { $plan += "$n non trovata"; continue }
+                    $links = @(Get-GpoLinkTargets $Config $g)
+                    $plan += "Disattiva i collegamenti di '$n' ($($links.Count))"
+                    if ($do) { foreach ($t in $links) { Set-GPLink -Guid $g.Id -Target $t -LinkEnabled No | Out-Null } }
+                }
+            }
+            default { throw 'Azione non annullabile in automatico.' }
+        }
+        foreach ($p in $plan) { Write-ToolLog "    $p" }
+        $esito = 'OK'
+        $msg = ($plan -join '; ')
+        if (-not $do) { $esito = 'Simulato'; $msg = 'Verrebbe eseguito: ' + $msg }
+        $dati = [pscustomobject]@{ Id = [string]$b.Id; Categoria = 'Ripristino'; Titolo = "Annulla $($b.Id)"; Impatto = ''; Richiede = 'Domain Admins'; Prima = "Backup del $($b.Date) di $($b.By)"; Piano = ($plan -join '; '); Esito = $esito; Messaggio = $msg; Dopo = ''; Annullamento = '' }
+        @{ Esito = $esito; Messaggio = $msg; Dati = $dati }
+    }
+
+    # OU e dominio a cui e' collegata una GPO (dal report XML della GPO)
+    function Get-GpoLinkTargets($Config, $Gpo) {
+        $ctx = Get-AdContext $Config
+        $guid = "{$($Gpo.Id)}"
+        @(Search-Ldap $Config ('(gPLink=*{0}*)' -f $guid) @('distinguishedName') | ForEach-Object { [string]$_.distinguishedName })
     }
     #endregion
 }
 #region SPECIFICO: campi della configurazione e colonne
 $ToolSchema = @(
     @{ Type = 'Section'; Label = 'Modalita''' }
-    @{ Key = 'Mode'; Label = 'Modalita'''; Type = 'Choice'; Choices = @('Fotografia', 'Hardening'); Help = 'Fotografia: controlli in sola lettura e report. Hardening: azioni correttive selezionabili una per una, con verifica dello stato prima e dopo, backup e report. Dopo il cambio premere Analizza.' }
+    @{ Key = 'Mode'; Label = 'Modalita'''; Type = 'Choice'; Choices = @('Fotografia', 'Hardening', 'Ripristino'); Help = 'Fotografia: controlli in sola lettura e report. Hardening: azioni correttive selezionabili una per una, con verifica prima e dopo, backup e report. Ripristino: annulla le azioni di un''esecuzione di hardening partendo dai suoi backup. Dopo il cambio premere Analizza.' }
     @{ Key = 'DryRun'; Label = 'Simulazione (hardening)'; Type = 'Bool'; Help = 'Attiva di default: mostra cosa verrebbe fatto senza modificare nulla. Toglierla solo dopo aver letto il report di simulazione.' }
+    @{ Key = 'CompareWith'; Label = 'Fotografia da confrontare'; Type = 'File'; Filter = 'Fotografia (*.json)|*.json'; Help = 'Vuoto = l''ultima fotografia dello stesso dominio nella cartella dei report. Il report mostra rischi nuovi, risolti, peggiorati e la variazione del punteggio.' }
+    @{ Key = 'RestoreFolder'; Label = 'Cartella da ripristinare'; Type = 'Folder'; Help = 'Solo modalita'' Ripristino: cartella Hardening_<dominio>_<data> con i file *.backup.json da annullare.' }
     @{ Type = 'Section'; Label = 'Dominio' }
     @{ Key = 'DomainController'; Label = 'Domain controller'; Type = 'Text'; Help = 'Vuoto = scelto automaticamente. Letture LDAP, GPO e SYSVOL usano tutte questo DC (niente conflitti di replica).' }
     @{ Type = 'Section'; Label = 'Soglie' }

@@ -15,6 +15,8 @@
     cifratura reversibile, password non obbligatoria, Guest, inattivi), Windows LAPS (schema, permessi, GPO),
     GPO di hardening per DC e membri (firma LDAP/SMB, channel binding, NTLMv2, SMBv1, Spooler, RunAsPPL,
     WDigest, registri), criteri di controllo avanzati sui DC, tier model (OU, gruppi, GPO di deny logon).
+    Modalita' Ripristino: annulla le azioni di un'esecuzione di hardening partendo dai suoi backup JSON.
+    La fotografia si confronta in automatico con la precedente dello stesso dominio (rischi nuovi e risolti).
     L'hardening richiede gli strumenti RSAT (ActiveDirectory, GroupPolicy) e un account Domain Admins
     (alcune azioni Enterprise o Schema Admins).
 
@@ -41,7 +43,7 @@
     .\Invoke-ADAssessment.ps1 -NoGui -ConfigPath D:\Assessment\contoso-hardening.json -User HD-MAQ,HD-PRE2K -Simulate
 
 .NOTES
-    Versione: 0.2.0 (fase 1 fotografia + fase 2 hardening)
+    Versione: 0.3.0 (fotografia, hardening, ripristino, confronto)
     Repo:     fispas/tools (active-directory/ad-hardening)
     Richiede: macchina nel dominio, PowerShell 5.1; per l'hardening RSAT AD + GPMC
 #>
@@ -56,7 +58,7 @@ param(
 $Tool = @{
     Name         = 'ADAssessment'
     Title        = 'Active Directory: fotografia e hardening'
-    Version      = '0.2.0'
+    Version      = '0.3.0'
     ReadOnly     = $true
     RequiresAdmin = $false
     ItemNoun     = 'controlli o azioni'

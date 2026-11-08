@@ -1,6 +1,6 @@
 # ad-hardening — Fotografia e hardening di Active Directory
 
-> **Stato:** versione 0.2.0 — fase 1 (fotografia, 28 controlli) e fase 2 (hardening, 38 azioni) nello stesso tool, da collaudare in laboratorio. Fase 3 (documentazione) da fare. Questo file raccoglie anche linee guida e decisioni.
+> **Stato:** versione 0.3.0 — fotografia (31 controlli, con confronto automatico), hardening (42 azioni) e ripristino dai backup nello stesso tool, da collaudare in laboratorio. Fase 3 (documentazione) da fare. Questo file raccoglie anche linee guida e decisioni.
 
 ## Uso della fase 1 — `Invoke-ADAssessment.ps1`
 
@@ -81,6 +81,13 @@ Prossimi controlli della fase 1:
 | Tier model | `HD-TIER-OU` OU Tier0/1/2 (Accounts, Groups, Devices, ServiceAccounts) protette, gruppi TierN-Admins · `HD-TIER-LOGON` GPO di deny logon (locale, RDP, rete, batch, servizio) Tier0→Tier1/2 e Tier1→Tier2, **non collegate** finché non si sceglie | alto |
 
 Configurazione granulare in GUI: prefisso e modalità di collegamento delle GPO (attiva / disattivata / non collegata), OU per server e client, livello NTLM, channel binding, dimensione dei log, stop immediato dello Spooler, policy password e PSO, Protected Users, account break-glass, gestione degli inattivi, intervallo krbtgt, OU e parametri LAPS, nome del tier model e collegamento delle sue GPO.
+
+**Novità 0.3.0**
+- Controlli **ADCS ESC1–ESC4** (modelli pubblicati sfruttabili da utenti comuni), **DCSync** e controllo dell'oggetto dominio concessi a principali non standard (account Entra Connect riconosciuti e segnalati a parte), **AdminSDHolder** con permessi anomali.
+- **Confronto** automatico con la fotografia precedente dello stesso dominio (o con un file scelto): variazione del punteggio, rischi nuovi, peggiorati, migliorati, risolti, nuove evidenze.
+- Azioni `HD-DC-NTLMAUDIT` / `HD-MB-NTLMAUDIT` (audit NTLM prima di restringerlo), `HD-MB-CREDGUARD` (Credential Guard senza blocco UEFI), `HD-MB-RCG` (Remote Credential Guard per RDP).
+- **Modalità Ripristino**: si indica la cartella `Hardening_<dominio>_<data>`; Analizza elenca i backup, ciascuno annullabile (flag degli account, valori delle GPO, account inattivi riattivati e riportati nell'OU d'origine, membri dei gruppi, MachineAccountQuota, policy password, PSO, adminCount, collegamenti delle GPO disattivati). Cestino AD, KDS, schema LAPS, krbtgt e OU del tier model restano manuali e sono segnalati. Simulazione di default.
+- Report HTML con lo stile comune (punteggio ad anello, filtri per esito, ricerca nelle evidenze, tema scuro, stampa/PDF).
 
 Le password GPP (cpassword) e la delega non vincolata restano solo segnalate dalla fotografia: si correggono a mano (serve sapere cosa usa quella configurazione).
 
@@ -169,5 +176,6 @@ Report Word sullo schema dell'"Analisi Healthcheck Active Directory" già in uso
   - soglie di punteggio e pesi: allineati a PingCastle o propri.
 
 ## Changelog
+- **0.3.0** — controlli ADCS ESC1-ESC4, DCSync, AdminSDHolder; confronto tra fotografie; azioni audit NTLM, Credential Guard, Remote Credential Guard; modalità Ripristino dai backup; report e GUI con la nuova grafica.
 - **0.2.0** — fase 2: modalità Hardening con 38 azioni (dominio, account privilegiati, account, Windows LAPS, GPO DC e membri, criteri di audit avanzati, tier model), verifica prima/dopo, simulazione di default, backup JSON, report HTML/CSV/JSON con istruzioni di annullamento; configurazione granulare in GUI.
 - **0.1.0** — fase 1: 28 controlli in sola lettura, report HTML / JSON / CSV, punteggio, GUI e `-NoGui`.
