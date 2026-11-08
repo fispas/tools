@@ -180,6 +180,9 @@
             @{ Name = 'Server Operators'; Sid = 'S-1-5-32-549' }
             @{ Name = 'Print Operators'; Sid = 'S-1-5-32-550' }
             @{ Name = 'Backup Operators'; Sid = 'S-1-5-32-551' }
+            @{ Name = 'Replicator'; Sid = 'S-1-5-32-552' }
+            @{ Name = 'Key Admins'; Sid = "$($ctx.Sid)-526" }
+            @{ Name = 'Enterprise Key Admins'; Sid = "$($ctx.Sid)-527" }
         )
     }
 
@@ -222,10 +225,12 @@
             @{ Id = 'H-DC-01'; Cat = 'Salute del dominio'; Title = 'Domain controller e sistemi operativi'; Weight = 10; Needs = 'Utente di dominio'; Run = {
                 param($Config)
                 $dcs = @(Search-Ldap $Config '(&(objectCategory=computer)(userAccountControl:1.2.840.113556.1.4.803:=8192))' @('dNSHostName', 'operatingSystem', 'operatingSystemVersion', 'lastLogonTimestamp'))
+                # 2003/2008: fuori supporto; 2012/2012 R2: anche gli ESU sono finiti il 13/10/2026; 2016: supporto fino al 12/01/2027
                 $old = @($dcs | Where-Object { "$($_.operatingSystem)" -match '2003|2008|2012' })
+                $soon = @($dcs | Where-Object { "$($_.operatingSystem)" -match '2016' })
                 $ev = Format-Evidence $dcs { param($d) '{0} - {1} {2}' -f $d.dNSHostName, $d.operatingSystem, $d.operatingSystemVersion } $Config
-                if (@($old | Where-Object { "$($_.operatingSystem)" -match '2003|2008' }).Count) { return New-CheckResult 'Critico' "$($dcs.Count) DC, di cui $($old.Count) con sistema operativo fuori supporto" $ev 'Sostituire i DC con Windows Server 2003/2008: non ricevono aggiornamenti di sicurezza.' }
-                if ($old.Count) { return New-CheckResult 'Attenzione' "$($dcs.Count) DC, di cui $($old.Count) con Windows Server 2012/2012 R2 (fuori supporto da ottobre 2023)" $ev 'Pianificare la sostituzione dei DC 2012/2012 R2.' }
+                if ($old.Count) { return New-CheckResult 'Critico' "$($dcs.Count) DC, di cui $($old.Count) con sistema operativo fuori supporto (2003, 2008 o 2012/2012 R2: niente piu' aggiornamenti, ESU compresi)" $ev 'Sostituire subito i DC fuori supporto: un DC senza patch espone tutto il dominio.' }
+                if ($soon.Count) { return New-CheckResult 'Attenzione' "$($dcs.Count) DC, di cui $($soon.Count) con Windows Server 2016 (supporto fino al 12 gennaio 2027)" $ev 'Pianificare ora la sostituzione dei DC 2016 con 2022 o 2025.' }
                 if ($dcs.Count -lt 2) { return New-CheckResult 'Attenzione' 'Un solo domain controller: nessuna ridondanza' $ev 'Aggiungere almeno un secondo DC.' }
                 New-CheckResult 'OK' "$($dcs.Count) DC con sistema operativo supportato" $ev
             } }
@@ -246,6 +251,9 @@
                 if ($g) { $flags = $g.'msDFSR-Flags' }
                 $states = @{ 0 = 'Start (FRS)'; 16 = 'Prepared'; 32 = 'Redirected'; 48 = 'Eliminated (solo DFSR)' }
                 if ($null -eq $flags) {
+                    # domini creati direttamente con DFSR: nessuno stato di migrazione, ma le sottoscrizioni SYSVOL dei DC esistono
+                    $subs = @(Search-Ldap $Config '(&(objectClass=msDFSR-Subscription)(cn=SYSVOL Subscription))' @('distinguishedName'))
+                    if ($subs.Count) { return New-CheckResult 'OK' "SYSVOL replicata con DFSR ($($subs.Count) DC sottoscritti)" }
                     if ($ctx.DomainFL -ge 3) { return New-CheckResult 'Critico' 'Migrazione da FRS a DFSR mai avviata: SYSVOL replicata con FRS' @() 'Migrare SYSVOL a DFSR con dfsrmig (prepared, redirected, eliminated). FRS non e'' supportato da Windows Server 2019 in poi.' }
                     return New-CheckResult 'Critico' 'SYSVOL replicata con FRS (livello funzionale < 2008)' @() 'Alzare il livello funzionale e migrare a DFSR.' }
                 $st = $states[[int]$flags]
@@ -349,7 +357,7 @@
             } }
             @{ Id = 'K-ASREP-01'; Cat = 'Kerberos'; Title = 'Preautenticazione Kerberos disattivata (AS-REP roasting)'; Weight = 15; Needs = 'Utente di dominio'; Run = {
                 param($Config)
-                $u = @(Search-Ldap $Config '(&(objectCategory=person)(objectClass=user)(userAccountControl:1.2.840.113556.1.4.803:=4194304))' $script:UserProps)
+                $u = @(Search-Ldap $Config '(&(objectCategory=person)(objectClass=user)(userAccountControl:1.2.840.113556.1.4.803:=4194304)(!(userAccountControl:1.2.840.113556.1.4.803:=2)))' $script:UserProps)
                 if (-not $u.Count) { return New-CheckResult 'OK' 'Nessun account senza preautenticazione' }
                 New-CheckResult 'Critico' "$($u.Count) account senza preautenticazione Kerberos" (Format-Evidence $u { param($x) $x.sAMAccountName } $Config) 'Togliere "Non richiedere la preautenticazione Kerberos" dagli account.'
             } }
@@ -416,11 +424,18 @@
                 param($Config)
                 $days = [int]$Config.InactiveDays
                 $c = @(Search-Ldap $Config '(&(objectCategory=computer)(!(userAccountControl:1.2.840.113556.1.4.803:=2)))' @('sAMAccountName', 'operatingSystem', 'lastLogonTimestamp'))
-                $eol = @($c | Where-Object { "$($_.operatingSystem)" -match 'Windows (XP|Vista|7|8 |8\.1)|Server (2003|2008)' })
+                # fuori supporto: XP-8.1, Server 2003-2012 R2 (ESU finiti il 13/10/2026); solo con ESU: Windows 10 non LTSC (dal 14/10/2025); in scadenza: Server 2016 (12/01/2027)
+                $eol = @($c | Where-Object { "$($_.operatingSystem)" -match 'Windows (XP|Vista|7|8 |8\.1)|Server (2003|2008|2012)' })
+                $esu = @($c | Where-Object { "$($_.operatingSystem)" -match '^Windows 10' -and "$($_.operatingSystem)" -notmatch 'LTSC|LTSB' })
+                $soon = @($c | Where-Object { "$($_.operatingSystem)" -match 'Server 2016' })
                 $inact = @($c | Where-Object { $ll = Get-AgeDays $_.lastLogonTimestamp; $null -ne $ll -and $ll -gt $days })
-                $ev = @(Format-Evidence $eol { param($x) 'Obsoleto: {0} - {1}' -f $x.sAMAccountName, $x.operatingSystem } $Config) + @(Format-Evidence $inact { param($x) 'Inattivo: {0} - {1} giorni' -f $x.sAMAccountName, (Get-AgeDays $x.lastLogonTimestamp) } $Config)
-                if ($eol.Count) { return New-CheckResult 'Critico' "$($eol.Count) computer con sistema operativo fuori supporto, $($inact.Count) inattivi da oltre $days giorni (su $($c.Count))" $ev 'Sostituire o isolare i sistemi fuori supporto; disabilitare i computer inattivi.' }
-                if ($inact.Count) { return New-CheckResult 'Attenzione' "$($inact.Count) computer inattivi da oltre $days giorni (su $($c.Count))" $ev 'Disabilitare e poi eliminare i computer inattivi.' }
+                $ev = @(Format-Evidence $eol { param($x) 'Fuori supporto: {0} - {1}' -f $x.sAMAccountName, $x.operatingSystem } $Config) +
+                      @(Format-Evidence $esu { param($x) 'Solo con ESU: {0} - {1}' -f $x.sAMAccountName, $x.operatingSystem } $Config) +
+                      @(Format-Evidence $soon { param($x) 'Supporto fino al 12/01/2027: {0} - {1}' -f $x.sAMAccountName, $x.operatingSystem } $Config) +
+                      @(Format-Evidence $inact { param($x) 'Inattivo: {0} - {1} giorni' -f $x.sAMAccountName, (Get-AgeDays $x.lastLogonTimestamp) } $Config)
+                $sum = "$($eol.Count) fuori supporto, $($esu.Count) Windows 10 (solo con ESU), $($soon.Count) Server 2016 in scadenza, $($inact.Count) inattivi da oltre $days giorni (su $($c.Count))"
+                if ($eol.Count) { return New-CheckResult 'Critico' $sum $ev 'Sostituire o isolare i sistemi fuori supporto; per Windows 10 verificare la copertura ESU o passare a Windows 11; pianificare i Server 2016; disabilitare i computer inattivi.' }
+                if ($esu.Count -or $soon.Count -or $inact.Count) { return New-CheckResult 'Attenzione' $sum $ev 'Windows 10: ESU attivi o migrazione a Windows 11; Server 2016: sostituzione entro gennaio 2027; computer inattivi: disabilitare e poi eliminare.' }
                 New-CheckResult 'OK' "$($c.Count) computer attivi, nessuno obsoleto o inattivo"
             } }
 
@@ -488,9 +503,17 @@
                 $t = @(Search-Ldap $Config '(objectClass=trustedDomain)' @('name', 'trustDirection', 'trustType', 'trustAttributes'))
                 if (-not $t.Count) { return New-CheckResult 'OK' 'Nessun trust' }
                 $dir = @{ 1 = 'in ingresso'; 2 = 'in uscita'; 3 = 'bidirezionale' }
-                $noFilter = @($t | Where-Object { [int]$_.trustType -eq 2 -and ([int]$_.trustAttributes -band 0x8) -eq 0 -and ([int]$_.trustAttributes -band 0x4) -eq 0 -and [int]$_.trustDirection -band 1 })
+                # il SID filtering protegge chi si fida: conta sui trust in uscita (2) o bidirezionali (3) di questo dominio
+                $out = @($t | Where-Object { [int]$_.trustDirection -band 2 })
+                $noFilter = @($out | Where-Object { [int]$_.trustType -eq 2 -and ([int]$_.trustAttributes -band 0x8) -eq 0 -and ([int]$_.trustAttributes -band 0x4) -eq 0 })
+                $sidHist = @($out | Where-Object { ([int]$_.trustAttributes -band 0x8) -and ([int]$_.trustAttributes -band 0x40) })
+                $tgtDel = @($t | Where-Object { [int]$_.trustAttributes -band 0x800 })
                 $ev = Format-Evidence $t { param($x) '{0} - {1}, attributi 0x{2:X}' -f $x.name, $dir[[int]$x.trustDirection], [int]$x.trustAttributes } $Config
-                if ($noFilter.Count) { return New-CheckResult 'Attenzione' "$($t.Count) trust, di cui $($noFilter.Count) esterni in ingresso senza SID filtering" $ev 'Attivare il SID filtering (quarantine) sui trust esterni e valutare la selective authentication.' }
+                $iss = @()
+                if ($noFilter.Count) { $iss += "$($noFilter.Count) trust esterni senza SID filtering (quarantine)" }
+                if ($sidHist.Count) { $iss += "$($sidHist.Count) trust di foresta con SID history abilitata" }
+                if ($tgtDel.Count) { $iss += "$($tgtDel.Count) trust con delega dei TGT abilitata" }
+                if ($iss.Count) { return New-CheckResult 'Attenzione' "$($t.Count) trust: $($iss -join '; ')" $ev 'netdom trust ... /quarantine:yes sui trust esterni, /enablesidhistory:no sui trust di foresta, /EnableTgtDelegation:no; valutare la selective authentication.' }
                 New-CheckResult 'Info' "$($t.Count) trust configurati" $ev
             } }
             @{ Id = 'C-SPOOL-01'; Cat = 'Configurazione del dominio'; Title = 'Print Spooler sui domain controller'; Weight = 10; Needs = 'Amministratore sui DC (WMI/WinRM)'; Run = {

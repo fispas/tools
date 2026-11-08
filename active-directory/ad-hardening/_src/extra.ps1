@@ -251,8 +251,14 @@
         switch ($kind) {
             'Uac' {
                 foreach ($a in @($data)) {
-                    $plan += "$($a.Account): userAccountControl -> 0x$('{0:X}' -f [int]$a.OldUac)"
-                    if ($do) { $de = [adsi]"LDAP://$($ctx.Dc)/$(([string]$a.Dn).Replace('/', '\/'))"; $de.Properties['userAccountControl'].Value = [int]$a.OldUac; $de.CommitChanges() }
+                    # solo i bit modificati dall'hardening: le altre modifiche successive (es. account disattivato) restano
+                    $mask = [int]$a.OldUac -bxor [int]$a.NewUac
+                    $de = [adsi]"LDAP://$($ctx.Dc)/$(([string]$a.Dn).Replace('/', '\/'))"
+                    $now = [int]$de.Properties['userAccountControl'].Value
+                    $target = ($now -band (-bnot $mask)) -bor ([int]$a.OldUac -band $mask)
+                    if ($target -eq $now) { $plan += "$($a.Account): gia' come prima"; continue }
+                    $plan += "$($a.Account): userAccountControl 0x$('{0:X}' -f $now) -> 0x$('{0:X}' -f $target)"
+                    if ($do) { $de.Properties['userAccountControl'].Value = $target; $de.CommitChanges() }
                 }
             }
             'GpoRegistry' {
@@ -262,8 +268,11 @@
                         $plan += "$($v.Gpo): rimuovi $($v.Key)\$($v.Name)"
                         if ($do) { Remove-GPRegistryValue -Guid $g.Id -Key $v.Key -ValueName $v.Name -ErrorAction SilentlyContinue | Out-Null }
                     } else {
-                        $plan += "$($v.Gpo): $($v.Key)\$($v.Name) = $($v.Old)"
-                        if ($do) { Set-GPRegistryValue -Guid $g.Id -Key $v.Key -ValueName $v.Name -Type DWord -Value ([int]$v.Old) | Out-Null }
+                        $plan += "$($v.Gpo): $($v.Key)\$($v.Name) = $(@($v.Old) -join ', ')"
+                        # tipo del valore precedente (backup recenti), altrimenti quello impostato dall'hardening; DWord per i backup vecchi
+                        $type = if ($v.OldType) { [string]$v.OldType } elseif ($v.Type) { [string]$v.Type } else { 'DWord' }
+                        $val = switch ($type) { 'DWord' { [int]$v.Old } 'QWord' { [int64]$v.Old } 'MultiString' { [string[]]@($v.Old) } default { [string]$v.Old } }
+                        if ($do) { Set-GPRegistryValue -Guid $g.Id -Key $v.Key -ValueName $v.Name -Type $type -Value $val | Out-Null }
                     }
                 }
             }
@@ -275,7 +284,10 @@
                     $plan += "$($a.Account): riattiva, ripristina la descrizione" + $(if ([string]$cur.distinguishedName -ne [string]$a.Dn) { " e riporta in $origParent" } else { '' })
                     if ($do) {
                         $de = [adsi]"LDAP://$($ctx.Dc)/$(([string]$cur.distinguishedName).Replace('/', '\/'))"
-                        $de.Properties['userAccountControl'].Value = [int]$a.OldUac
+                        # si toglie solo la disattivazione fatta dall'hardening (bit 2), il resto di userAccountControl resta com'e'
+                        $now = [int]$de.Properties['userAccountControl'].Value
+                        if (-not ([int]$a.OldUac -band 2)) { $now = $now -band (-bnot 2) }
+                        $de.Properties['userAccountControl'].Value = $now
                         if ($a.Description) { $de.Properties['description'].Value = [string]$a.Description } else { $de.Properties['description'].Clear() }
                         $de.CommitChanges()
                         if ([string]$cur.distinguishedName -ne [string]$a.Dn) { Move-ADObject -Identity ([string]$cur.distinguishedName) -TargetPath $origParent }

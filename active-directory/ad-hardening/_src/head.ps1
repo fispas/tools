@@ -43,7 +43,7 @@
     .\Invoke-ADAssessment.ps1 -NoGui -ConfigPath D:\Assessment\contoso-hardening.json -User HD-MAQ,HD-PRE2K -Simulate
 
 .NOTES
-    Versione: 0.3.0 (fotografia, hardening, ripristino, confronto)
+    Versione: 0.3.1 (fotografia, hardening, ripristino, confronto)
     Repo:     fispas/tools (active-directory/ad-hardening)
     Richiede: macchina nel dominio, PowerShell 5.1; per l'hardening RSAT AD + GPMC
 #>
@@ -58,7 +58,7 @@ param(
 $Tool = @{
     Name         = 'ADAssessment'
     Title        = 'Active Directory: fotografia e hardening'
-    Version      = '0.3.0'
+    Version      = '0.3.1'
     ReadOnly     = $true
     RequiresAdmin = $false
     ItemNoun     = 'controlli o azioni'

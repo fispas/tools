@@ -43,7 +43,7 @@
     .\Invoke-ADAssessment.ps1 -NoGui -ConfigPath D:\Assessment\contoso-hardening.json -User HD-MAQ,HD-PRE2K -Simulate
 
 .NOTES
-    Versione: 0.3.0 (fotografia, hardening, ripristino, confronto)
+    Versione: 0.3.1 (fotografia, hardening, ripristino, confronto)
     Repo:     fispas/tools (active-directory/ad-hardening)
     Richiede: macchina nel dominio, PowerShell 5.1; per l'hardening RSAT AD + GPMC
 #>
@@ -58,7 +58,7 @@ param(
 $Tool = @{
     Name         = 'ADAssessment'
     Title        = 'Active Directory: fotografia e hardening'
-    Version      = '0.3.0'
+    Version      = '0.3.1'
     ReadOnly     = $true
     RequiresAdmin = $false
     ItemNoun     = 'controlli o azioni'
@@ -671,6 +671,9 @@ public static extern bool GetDiskFreeSpaceEx(string lpDirectoryName, out ulong l
             @{ Name = 'Server Operators'; Sid = 'S-1-5-32-549' }
             @{ Name = 'Print Operators'; Sid = 'S-1-5-32-550' }
             @{ Name = 'Backup Operators'; Sid = 'S-1-5-32-551' }
+            @{ Name = 'Replicator'; Sid = 'S-1-5-32-552' }
+            @{ Name = 'Key Admins'; Sid = "$($ctx.Sid)-526" }
+            @{ Name = 'Enterprise Key Admins'; Sid = "$($ctx.Sid)-527" }
         )
     }
 
@@ -713,10 +716,12 @@ public static extern bool GetDiskFreeSpaceEx(string lpDirectoryName, out ulong l
             @{ Id = 'H-DC-01'; Cat = 'Salute del dominio'; Title = 'Domain controller e sistemi operativi'; Weight = 10; Needs = 'Utente di dominio'; Run = {
                 param($Config)
                 $dcs = @(Search-Ldap $Config '(&(objectCategory=computer)(userAccountControl:1.2.840.113556.1.4.803:=8192))' @('dNSHostName', 'operatingSystem', 'operatingSystemVersion', 'lastLogonTimestamp'))
+                # 2003/2008: fuori supporto; 2012/2012 R2: anche gli ESU sono finiti il 13/10/2026; 2016: supporto fino al 12/01/2027
                 $old = @($dcs | Where-Object { "$($_.operatingSystem)" -match '2003|2008|2012' })
+                $soon = @($dcs | Where-Object { "$($_.operatingSystem)" -match '2016' })
                 $ev = Format-Evidence $dcs { param($d) '{0} - {1} {2}' -f $d.dNSHostName, $d.operatingSystem, $d.operatingSystemVersion } $Config
-                if (@($old | Where-Object { "$($_.operatingSystem)" -match '2003|2008' }).Count) { return New-CheckResult 'Critico' "$($dcs.Count) DC, di cui $($old.Count) con sistema operativo fuori supporto" $ev 'Sostituire i DC con Windows Server 2003/2008: non ricevono aggiornamenti di sicurezza.' }
-                if ($old.Count) { return New-CheckResult 'Attenzione' "$($dcs.Count) DC, di cui $($old.Count) con Windows Server 2012/2012 R2 (fuori supporto da ottobre 2023)" $ev 'Pianificare la sostituzione dei DC 2012/2012 R2.' }
+                if ($old.Count) { return New-CheckResult 'Critico' "$($dcs.Count) DC, di cui $($old.Count) con sistema operativo fuori supporto (2003, 2008 o 2012/2012 R2: niente piu' aggiornamenti, ESU compresi)" $ev 'Sostituire subito i DC fuori supporto: un DC senza patch espone tutto il dominio.' }
+                if ($soon.Count) { return New-CheckResult 'Attenzione' "$($dcs.Count) DC, di cui $($soon.Count) con Windows Server 2016 (supporto fino al 12 gennaio 2027)" $ev 'Pianificare ora la sostituzione dei DC 2016 con 2022 o 2025.' }
                 if ($dcs.Count -lt 2) { return New-CheckResult 'Attenzione' 'Un solo domain controller: nessuna ridondanza' $ev 'Aggiungere almeno un secondo DC.' }
                 New-CheckResult 'OK' "$($dcs.Count) DC con sistema operativo supportato" $ev
             } }
@@ -737,6 +742,9 @@ public static extern bool GetDiskFreeSpaceEx(string lpDirectoryName, out ulong l
                 if ($g) { $flags = $g.'msDFSR-Flags' }
                 $states = @{ 0 = 'Start (FRS)'; 16 = 'Prepared'; 32 = 'Redirected'; 48 = 'Eliminated (solo DFSR)' }
                 if ($null -eq $flags) {
+                    # domini creati direttamente con DFSR: nessuno stato di migrazione, ma le sottoscrizioni SYSVOL dei DC esistono
+                    $subs = @(Search-Ldap $Config '(&(objectClass=msDFSR-Subscription)(cn=SYSVOL Subscription))' @('distinguishedName'))
+                    if ($subs.Count) { return New-CheckResult 'OK' "SYSVOL replicata con DFSR ($($subs.Count) DC sottoscritti)" }
                     if ($ctx.DomainFL -ge 3) { return New-CheckResult 'Critico' 'Migrazione da FRS a DFSR mai avviata: SYSVOL replicata con FRS' @() 'Migrare SYSVOL a DFSR con dfsrmig (prepared, redirected, eliminated). FRS non e'' supportato da Windows Server 2019 in poi.' }
                     return New-CheckResult 'Critico' 'SYSVOL replicata con FRS (livello funzionale < 2008)' @() 'Alzare il livello funzionale e migrare a DFSR.' }
                 $st = $states[[int]$flags]
@@ -840,7 +848,7 @@ public static extern bool GetDiskFreeSpaceEx(string lpDirectoryName, out ulong l
             } }
             @{ Id = 'K-ASREP-01'; Cat = 'Kerberos'; Title = 'Preautenticazione Kerberos disattivata (AS-REP roasting)'; Weight = 15; Needs = 'Utente di dominio'; Run = {
                 param($Config)
-                $u = @(Search-Ldap $Config '(&(objectCategory=person)(objectClass=user)(userAccountControl:1.2.840.113556.1.4.803:=4194304))' $script:UserProps)
+                $u = @(Search-Ldap $Config '(&(objectCategory=person)(objectClass=user)(userAccountControl:1.2.840.113556.1.4.803:=4194304)(!(userAccountControl:1.2.840.113556.1.4.803:=2)))' $script:UserProps)
                 if (-not $u.Count) { return New-CheckResult 'OK' 'Nessun account senza preautenticazione' }
                 New-CheckResult 'Critico' "$($u.Count) account senza preautenticazione Kerberos" (Format-Evidence $u { param($x) $x.sAMAccountName } $Config) 'Togliere "Non richiedere la preautenticazione Kerberos" dagli account.'
             } }
@@ -907,11 +915,18 @@ public static extern bool GetDiskFreeSpaceEx(string lpDirectoryName, out ulong l
                 param($Config)
                 $days = [int]$Config.InactiveDays
                 $c = @(Search-Ldap $Config '(&(objectCategory=computer)(!(userAccountControl:1.2.840.113556.1.4.803:=2)))' @('sAMAccountName', 'operatingSystem', 'lastLogonTimestamp'))
-                $eol = @($c | Where-Object { "$($_.operatingSystem)" -match 'Windows (XP|Vista|7|8 |8\.1)|Server (2003|2008)' })
+                # fuori supporto: XP-8.1, Server 2003-2012 R2 (ESU finiti il 13/10/2026); solo con ESU: Windows 10 non LTSC (dal 14/10/2025); in scadenza: Server 2016 (12/01/2027)
+                $eol = @($c | Where-Object { "$($_.operatingSystem)" -match 'Windows (XP|Vista|7|8 |8\.1)|Server (2003|2008|2012)' })
+                $esu = @($c | Where-Object { "$($_.operatingSystem)" -match '^Windows 10' -and "$($_.operatingSystem)" -notmatch 'LTSC|LTSB' })
+                $soon = @($c | Where-Object { "$($_.operatingSystem)" -match 'Server 2016' })
                 $inact = @($c | Where-Object { $ll = Get-AgeDays $_.lastLogonTimestamp; $null -ne $ll -and $ll -gt $days })
-                $ev = @(Format-Evidence $eol { param($x) 'Obsoleto: {0} - {1}' -f $x.sAMAccountName, $x.operatingSystem } $Config) + @(Format-Evidence $inact { param($x) 'Inattivo: {0} - {1} giorni' -f $x.sAMAccountName, (Get-AgeDays $x.lastLogonTimestamp) } $Config)
-                if ($eol.Count) { return New-CheckResult 'Critico' "$($eol.Count) computer con sistema operativo fuori supporto, $($inact.Count) inattivi da oltre $days giorni (su $($c.Count))" $ev 'Sostituire o isolare i sistemi fuori supporto; disabilitare i computer inattivi.' }
-                if ($inact.Count) { return New-CheckResult 'Attenzione' "$($inact.Count) computer inattivi da oltre $days giorni (su $($c.Count))" $ev 'Disabilitare e poi eliminare i computer inattivi.' }
+                $ev = @(Format-Evidence $eol { param($x) 'Fuori supporto: {0} - {1}' -f $x.sAMAccountName, $x.operatingSystem } $Config) +
+                      @(Format-Evidence $esu { param($x) 'Solo con ESU: {0} - {1}' -f $x.sAMAccountName, $x.operatingSystem } $Config) +
+                      @(Format-Evidence $soon { param($x) 'Supporto fino al 12/01/2027: {0} - {1}' -f $x.sAMAccountName, $x.operatingSystem } $Config) +
+                      @(Format-Evidence $inact { param($x) 'Inattivo: {0} - {1} giorni' -f $x.sAMAccountName, (Get-AgeDays $x.lastLogonTimestamp) } $Config)
+                $sum = "$($eol.Count) fuori supporto, $($esu.Count) Windows 10 (solo con ESU), $($soon.Count) Server 2016 in scadenza, $($inact.Count) inattivi da oltre $days giorni (su $($c.Count))"
+                if ($eol.Count) { return New-CheckResult 'Critico' $sum $ev 'Sostituire o isolare i sistemi fuori supporto; per Windows 10 verificare la copertura ESU o passare a Windows 11; pianificare i Server 2016; disabilitare i computer inattivi.' }
+                if ($esu.Count -or $soon.Count -or $inact.Count) { return New-CheckResult 'Attenzione' $sum $ev 'Windows 10: ESU attivi o migrazione a Windows 11; Server 2016: sostituzione entro gennaio 2027; computer inattivi: disabilitare e poi eliminare.' }
                 New-CheckResult 'OK' "$($c.Count) computer attivi, nessuno obsoleto o inattivo"
             } }
 
@@ -979,9 +994,17 @@ public static extern bool GetDiskFreeSpaceEx(string lpDirectoryName, out ulong l
                 $t = @(Search-Ldap $Config '(objectClass=trustedDomain)' @('name', 'trustDirection', 'trustType', 'trustAttributes'))
                 if (-not $t.Count) { return New-CheckResult 'OK' 'Nessun trust' }
                 $dir = @{ 1 = 'in ingresso'; 2 = 'in uscita'; 3 = 'bidirezionale' }
-                $noFilter = @($t | Where-Object { [int]$_.trustType -eq 2 -and ([int]$_.trustAttributes -band 0x8) -eq 0 -and ([int]$_.trustAttributes -band 0x4) -eq 0 -and [int]$_.trustDirection -band 1 })
+                # il SID filtering protegge chi si fida: conta sui trust in uscita (2) o bidirezionali (3) di questo dominio
+                $out = @($t | Where-Object { [int]$_.trustDirection -band 2 })
+                $noFilter = @($out | Where-Object { [int]$_.trustType -eq 2 -and ([int]$_.trustAttributes -band 0x8) -eq 0 -and ([int]$_.trustAttributes -band 0x4) -eq 0 })
+                $sidHist = @($out | Where-Object { ([int]$_.trustAttributes -band 0x8) -and ([int]$_.trustAttributes -band 0x40) })
+                $tgtDel = @($t | Where-Object { [int]$_.trustAttributes -band 0x800 })
                 $ev = Format-Evidence $t { param($x) '{0} - {1}, attributi 0x{2:X}' -f $x.name, $dir[[int]$x.trustDirection], [int]$x.trustAttributes } $Config
-                if ($noFilter.Count) { return New-CheckResult 'Attenzione' "$($t.Count) trust, di cui $($noFilter.Count) esterni in ingresso senza SID filtering" $ev 'Attivare il SID filtering (quarantine) sui trust esterni e valutare la selective authentication.' }
+                $iss = @()
+                if ($noFilter.Count) { $iss += "$($noFilter.Count) trust esterni senza SID filtering (quarantine)" }
+                if ($sidHist.Count) { $iss += "$($sidHist.Count) trust di foresta con SID history abilitata" }
+                if ($tgtDel.Count) { $iss += "$($tgtDel.Count) trust con delega dei TGT abilitata" }
+                if ($iss.Count) { return New-CheckResult 'Attenzione' "$($t.Count) trust: $($iss -join '; ')" $ev 'netdom trust ... /quarantine:yes sui trust esterni, /enablesidhistory:no sui trust di foresta, /EnableTgtDelegation:no; valutare la selective authentication.' }
                 New-CheckResult 'Info' "$($t.Count) trust configurati" $ev
             } }
             @{ Id = 'C-SPOOL-01'; Cat = 'Configurazione del dominio'; Title = 'Print Spooler sui domain controller'; Weight = 10; Needs = 'Amministratore sui DC (WMI/WinRM)'; Run = {
@@ -1207,13 +1230,30 @@ public static extern bool GetDiskFreeSpaceEx(string lpDirectoryName, out ulong l
     $script:CseSecurity = '[{827D319E-6EAC-11D2-A4EA-00C04F79F83A}{803E14A0-B4FB-11D0-A0D0-00A0C90F574B}]'
     $script:CseAudit = '[{F3CCC681-B74C-4060-9F26-CD84525DCA2A}{0F3F3735-573D-9804-99E4-AB2A69BA5FD4}]'
 
-    # Diritti utente (Privilege Rights) in GptTmpl.inf: sostituisce le sezioni gestite, mantiene il resto
+    # Diritti utente (Privilege Rights) in GptTmpl.inf: sostituisce solo le voci gestite, mantiene il resto del file
     function Set-GpoPrivilegeRights($Config, $Gpo, [hashtable]$Rights) {
         $dir = Join-Path (Get-GpoSysvolPath $Config $Gpo) 'Machine\Microsoft\Windows NT\SecEdit'
         New-Item -ItemType Directory -Path $dir -Force | Out-Null
         $file = Join-Path $dir 'GptTmpl.inf'
-        $lines = @('[Unicode]', 'Unicode=yes', '[Version]', 'signature="$CHICAGO$"', 'Revision=1', '[Privilege Rights]')
-        foreach ($k in ($Rights.Keys | Sort-Object)) { $lines += ('{0} = {1}' -f $k, ((@($Rights[$k]) | ForEach-Object { "*$_" }) -join ',')) }
+        $sections = [ordered]@{}
+        $cur = $null
+        if (Test-Path -LiteralPath $file) {
+            foreach ($l in [System.IO.File]::ReadAllLines($file)) {
+                if ($l -match '^\s*\[(.+)\]\s*$') { $cur = $Matches[1]; if (-not $sections.Contains($cur)) { $sections[$cur] = New-Object System.Collections.Generic.List[string] }; continue }
+                if ($cur -and $l.Trim()) { $sections[$cur].Add($l) }
+            }
+        }
+        $sections['Unicode'] = New-Object System.Collections.Generic.List[string]; $sections['Unicode'].Add('Unicode=yes')
+        $sections['Version'] = New-Object System.Collections.Generic.List[string]; $sections['Version'].Add('signature="$CHICAGO$"'); $sections['Version'].Add('Revision=1')
+        $pr = New-Object System.Collections.Generic.List[string]
+        if ($sections.Contains('Privilege Rights')) { foreach ($l in $sections['Privilege Rights']) { if ($l -match '^\s*(\w+)\s*=' -and -not $Rights.ContainsKey($Matches[1])) { $pr.Add($l) } } }
+        foreach ($k in ($Rights.Keys | Sort-Object)) { $pr.Add(('{0} = {1}' -f $k, ((@($Rights[$k]) | ForEach-Object { "*$_" }) -join ','))) }
+        $sections['Privilege Rights'] = $pr
+        $lines = New-Object System.Collections.Generic.List[string]
+        foreach ($name in @('Unicode', 'Version') + @($sections.Keys | Where-Object { $_ -notin @('Unicode', 'Version') })) {
+            $lines.Add("[$name]")
+            foreach ($l in $sections[$name]) { $lines.Add($l) }
+        }
         [System.IO.File]::WriteAllLines($file, $lines, [System.Text.Encoding]::Unicode)
         Add-GpoMachineExtension $Config $Gpo $script:CseSecurity
     }
@@ -1379,8 +1419,8 @@ public static extern bool GetDiskFreeSpaceEx(string lpDirectoryName, out ulong l
                Values = @(, @('HKLM\SOFTWARE\Policies\Microsoft\Windows\CredentialsDelegation', 'AllowProtectedCreds', 'DWord', 1))
                Undo = 'Rimuovere AllowProtectedCreds dalla GPO. Uso: mstsc /remoteGuard dai PC amministrativi.' }
             @{ Id = 'HD-MB-SMB1'; Title = 'SMBv1 disattivato su server e client'; Impact = 'Medio'; Gpo = 'Member Hardening'; Scope = 'Member'
-               Values = @(@('HKLM\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters', 'SMB1', 'DWord', 0), @('HKLM\SYSTEM\CurrentControlSet\Services\mrxsmb10', 'Start', 'DWord', 4))
-               Undo = 'Rimuovere i valori dalla GPO Member Hardening (verificare prima stampanti/NAS che usano SMBv1).' }
+               Values = @(@('HKLM\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters', 'SMB1', 'DWord', 0), @('HKLM\SYSTEM\CurrentControlSet\Services\mrxsmb10', 'Start', 'DWord', 4), @('HKLM\SYSTEM\CurrentControlSet\Services\LanmanWorkstation', 'DependOnService', 'MultiString', @('Bowser', 'MRxSmb20', 'NSI')))
+               Undo = 'Rimuovere i valori dalla GPO Member Hardening (verificare prima stampanti/NAS che usano SMBv1). La dipendenza del servizio Workstation da MRxSmb10 va tolta insieme al driver, come indicato da Microsoft, altrimenti il servizio non si avvia.' }
             @{ Id = 'HD-MB-WDIGEST'; Title = 'WDigest senza password in memoria su server e client'; Impact = 'Basso'; Gpo = 'Member Hardening'; Scope = 'Member'
                Values = @(, @('HKLM\SYSTEM\CurrentControlSet\Control\SecurityProviders\WDigest', 'UseLogonCredential', 'DWord', 0))
                Undo = 'Rimuovere UseLogonCredential dalla GPO.' }
@@ -1422,8 +1462,9 @@ public static extern bool GetDiskFreeSpaceEx(string lpDirectoryName, out ulong l
             $bk = @()
             foreach ($v in $a.Values) {
                 $old = $null
-                try { $old = (Get-GPRegistryValue -Guid $g.Id -Key $v[0] -ValueName $v[1] -ErrorAction Stop).Value } catch { }
-                $bk += [pscustomobject]@{ Gpo = $g.DisplayName; Key = $v[0]; Name = $v[1]; Old = $old; New = $v[3] }
+                $oldType = $null
+                try { $cur = Get-GPRegistryValue -Guid $g.Id -Key $v[0] -ValueName $v[1] -ErrorAction Stop; $old = $cur.Value; $oldType = [string]$cur.Type } catch { }
+                $bk += [pscustomobject]@{ Gpo = $g.DisplayName; Key = $v[0]; Name = $v[1]; Old = $old; OldType = $oldType; New = $v[3]; Type = $v[2] }
                 Set-GPRegistryValue -Guid $g.Id -Key $v[0] -ValueName $v[1] -Type $v[2] -Value $v[3] | Out-Null
             }
             [void](Save-Backup $Config $a.Id $bk)
@@ -1653,7 +1694,12 @@ public static extern bool GetDiskFreeSpaceEx(string lpDirectoryName, out ulong l
                 # tutti i DC devono avere la stessa versione della password prima di ruotare di nuovo
                 $vals = @()
                 foreach ($d in @(Search-Ldap $Config '(&(objectCategory=computer)(userAccountControl:1.2.840.113556.1.4.803:=8192))' @('dNSHostName'))) {
-                    try { $vals += [string]([adsi]"LDAP://$($d.dNSHostName)/$dn").Properties['pwdLastSet'].Value } catch { throw "DC $($d.dNSHostName) non raggiungibile: rotazione annullata (serve la replica su tutti i DC)." }
+                    try {
+                        $ds = New-Object System.DirectoryServices.DirectorySearcher([adsi]"LDAP://$($d.dNSHostName)/$($dn.Replace('/', '\/'))", '(objectClass=*)', [string[]]@('pwdLastSet'), [System.DirectoryServices.SearchScope]::Base)
+                        $r = $ds.FindOne()
+                        if (-not $r -or -not $r.Properties['pwdlastset'].Count) { throw 'pwdLastSet non leggibile' }
+                        $vals += [string][int64]$r.Properties['pwdlastset'][0]
+                    } catch { throw "DC $($d.dNSHostName) non raggiungibile o non leggibile: rotazione annullata (serve la replica su tutti i DC). $($_.Exception.Message)" }
                 }
                 if (@($vals | Select-Object -Unique).Count -gt 1) { throw 'La password di krbtgt non e'' ancora replicata su tutti i DC: attendere e riprovare.' }
                 $state = Get-KrbtgtState
@@ -1817,7 +1863,8 @@ public static extern bool GetDiskFreeSpaceEx(string lpDirectoryName, out ulong l
     function Get-InactivePlan($Config, [bool]$Computers) {
         $ctx = Get-AdContext $Config
         $limit = $ctx.Now.AddDays(-[int]$Config.InactiveDays).ToFileTimeUtc()
-        $cls = if ($Computers) { '(objectCategory=computer)(!(userAccountControl:1.2.840.113556.1.4.803:=8192))(!(userAccountControl:1.2.840.113556.1.4.803:=67108864))' } else { '(objectCategory=person)(objectClass=user)' }
+        # utenti: esclusi gli account di trust tra domini (0x800), che disattivati romperebbero il trust
+        $cls = if ($Computers) { '(objectCategory=computer)(!(userAccountControl:1.2.840.113556.1.4.803:=8192))(!(userAccountControl:1.2.840.113556.1.4.803:=67108864))' } else { '(objectCategory=person)(objectClass=user)(!(userAccountControl:1.2.840.113556.1.4.803:=2048))' }
         $f = "(&$cls(!(userAccountControl:1.2.840.113556.1.4.803:=2))(|(lastLogonTimestamp<=$limit)(!(lastLogonTimestamp=*)))(pwdLastSet<=$limit))"
         $all = @(Search-Accounts $Config $f @('lastLogonTimestamp', 'pwdLastSet', 'whenCreated', 'servicePrincipalName', 'isCriticalSystemObject'))
         $created = (Get-Date).AddDays(-[int]$Config.InactiveDays)
@@ -2272,8 +2319,14 @@ public static extern bool GetDiskFreeSpaceEx(string lpDirectoryName, out ulong l
         switch ($kind) {
             'Uac' {
                 foreach ($a in @($data)) {
-                    $plan += "$($a.Account): userAccountControl -> 0x$('{0:X}' -f [int]$a.OldUac)"
-                    if ($do) { $de = [adsi]"LDAP://$($ctx.Dc)/$(([string]$a.Dn).Replace('/', '\/'))"; $de.Properties['userAccountControl'].Value = [int]$a.OldUac; $de.CommitChanges() }
+                    # solo i bit modificati dall'hardening: le altre modifiche successive (es. account disattivato) restano
+                    $mask = [int]$a.OldUac -bxor [int]$a.NewUac
+                    $de = [adsi]"LDAP://$($ctx.Dc)/$(([string]$a.Dn).Replace('/', '\/'))"
+                    $now = [int]$de.Properties['userAccountControl'].Value
+                    $target = ($now -band (-bnot $mask)) -bor ([int]$a.OldUac -band $mask)
+                    if ($target -eq $now) { $plan += "$($a.Account): gia' come prima"; continue }
+                    $plan += "$($a.Account): userAccountControl 0x$('{0:X}' -f $now) -> 0x$('{0:X}' -f $target)"
+                    if ($do) { $de.Properties['userAccountControl'].Value = $target; $de.CommitChanges() }
                 }
             }
             'GpoRegistry' {
@@ -2283,8 +2336,11 @@ public static extern bool GetDiskFreeSpaceEx(string lpDirectoryName, out ulong l
                         $plan += "$($v.Gpo): rimuovi $($v.Key)\$($v.Name)"
                         if ($do) { Remove-GPRegistryValue -Guid $g.Id -Key $v.Key -ValueName $v.Name -ErrorAction SilentlyContinue | Out-Null }
                     } else {
-                        $plan += "$($v.Gpo): $($v.Key)\$($v.Name) = $($v.Old)"
-                        if ($do) { Set-GPRegistryValue -Guid $g.Id -Key $v.Key -ValueName $v.Name -Type DWord -Value ([int]$v.Old) | Out-Null }
+                        $plan += "$($v.Gpo): $($v.Key)\$($v.Name) = $(@($v.Old) -join ', ')"
+                        # tipo del valore precedente (backup recenti), altrimenti quello impostato dall'hardening; DWord per i backup vecchi
+                        $type = if ($v.OldType) { [string]$v.OldType } elseif ($v.Type) { [string]$v.Type } else { 'DWord' }
+                        $val = switch ($type) { 'DWord' { [int]$v.Old } 'QWord' { [int64]$v.Old } 'MultiString' { [string[]]@($v.Old) } default { [string]$v.Old } }
+                        if ($do) { Set-GPRegistryValue -Guid $g.Id -Key $v.Key -ValueName $v.Name -Type $type -Value $val | Out-Null }
                     }
                 }
             }
@@ -2296,7 +2352,10 @@ public static extern bool GetDiskFreeSpaceEx(string lpDirectoryName, out ulong l
                     $plan += "$($a.Account): riattiva, ripristina la descrizione" + $(if ([string]$cur.distinguishedName -ne [string]$a.Dn) { " e riporta in $origParent" } else { '' })
                     if ($do) {
                         $de = [adsi]"LDAP://$($ctx.Dc)/$(([string]$cur.distinguishedName).Replace('/', '\/'))"
-                        $de.Properties['userAccountControl'].Value = [int]$a.OldUac
+                        # si toglie solo la disattivazione fatta dall'hardening (bit 2), il resto di userAccountControl resta com'e'
+                        $now = [int]$de.Properties['userAccountControl'].Value
+                        if (-not ([int]$a.OldUac -band 2)) { $now = $now -band (-bnot 2) }
+                        $de.Properties['userAccountControl'].Value = $now
                         if ($a.Description) { $de.Properties['description'].Value = [string]$a.Description } else { $de.Properties['description'].Clear() }
                         $de.CommitChanges()
                         if ([string]$cur.distinguishedName -ne [string]$a.Dn) { Move-ADObject -Identity ([string]$cur.distinguishedName) -TargetPath $origParent }

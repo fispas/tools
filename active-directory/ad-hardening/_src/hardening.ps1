@@ -126,13 +126,30 @@
     $script:CseSecurity = '[{827D319E-6EAC-11D2-A4EA-00C04F79F83A}{803E14A0-B4FB-11D0-A0D0-00A0C90F574B}]'
     $script:CseAudit = '[{F3CCC681-B74C-4060-9F26-CD84525DCA2A}{0F3F3735-573D-9804-99E4-AB2A69BA5FD4}]'
 
-    # Diritti utente (Privilege Rights) in GptTmpl.inf: sostituisce le sezioni gestite, mantiene il resto
+    # Diritti utente (Privilege Rights) in GptTmpl.inf: sostituisce solo le voci gestite, mantiene il resto del file
     function Set-GpoPrivilegeRights($Config, $Gpo, [hashtable]$Rights) {
         $dir = Join-Path (Get-GpoSysvolPath $Config $Gpo) 'Machine\Microsoft\Windows NT\SecEdit'
         New-Item -ItemType Directory -Path $dir -Force | Out-Null
         $file = Join-Path $dir 'GptTmpl.inf'
-        $lines = @('[Unicode]', 'Unicode=yes', '[Version]', 'signature="$CHICAGO$"', 'Revision=1', '[Privilege Rights]')
-        foreach ($k in ($Rights.Keys | Sort-Object)) { $lines += ('{0} = {1}' -f $k, ((@($Rights[$k]) | ForEach-Object { "*$_" }) -join ',')) }
+        $sections = [ordered]@{}
+        $cur = $null
+        if (Test-Path -LiteralPath $file) {
+            foreach ($l in [System.IO.File]::ReadAllLines($file)) {
+                if ($l -match '^\s*\[(.+)\]\s*$') { $cur = $Matches[1]; if (-not $sections.Contains($cur)) { $sections[$cur] = New-Object System.Collections.Generic.List[string] }; continue }
+                if ($cur -and $l.Trim()) { $sections[$cur].Add($l) }
+            }
+        }
+        $sections['Unicode'] = New-Object System.Collections.Generic.List[string]; $sections['Unicode'].Add('Unicode=yes')
+        $sections['Version'] = New-Object System.Collections.Generic.List[string]; $sections['Version'].Add('signature="$CHICAGO$"'); $sections['Version'].Add('Revision=1')
+        $pr = New-Object System.Collections.Generic.List[string]
+        if ($sections.Contains('Privilege Rights')) { foreach ($l in $sections['Privilege Rights']) { if ($l -match '^\s*(\w+)\s*=' -and -not $Rights.ContainsKey($Matches[1])) { $pr.Add($l) } } }
+        foreach ($k in ($Rights.Keys | Sort-Object)) { $pr.Add(('{0} = {1}' -f $k, ((@($Rights[$k]) | ForEach-Object { "*$_" }) -join ','))) }
+        $sections['Privilege Rights'] = $pr
+        $lines = New-Object System.Collections.Generic.List[string]
+        foreach ($name in @('Unicode', 'Version') + @($sections.Keys | Where-Object { $_ -notin @('Unicode', 'Version') })) {
+            $lines.Add("[$name]")
+            foreach ($l in $sections[$name]) { $lines.Add($l) }
+        }
         [System.IO.File]::WriteAllLines($file, $lines, [System.Text.Encoding]::Unicode)
         Add-GpoMachineExtension $Config $Gpo $script:CseSecurity
     }
@@ -298,8 +315,8 @@
                Values = @(, @('HKLM\SOFTWARE\Policies\Microsoft\Windows\CredentialsDelegation', 'AllowProtectedCreds', 'DWord', 1))
                Undo = 'Rimuovere AllowProtectedCreds dalla GPO. Uso: mstsc /remoteGuard dai PC amministrativi.' }
             @{ Id = 'HD-MB-SMB1'; Title = 'SMBv1 disattivato su server e client'; Impact = 'Medio'; Gpo = 'Member Hardening'; Scope = 'Member'
-               Values = @(@('HKLM\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters', 'SMB1', 'DWord', 0), @('HKLM\SYSTEM\CurrentControlSet\Services\mrxsmb10', 'Start', 'DWord', 4))
-               Undo = 'Rimuovere i valori dalla GPO Member Hardening (verificare prima stampanti/NAS che usano SMBv1).' }
+               Values = @(@('HKLM\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters', 'SMB1', 'DWord', 0), @('HKLM\SYSTEM\CurrentControlSet\Services\mrxsmb10', 'Start', 'DWord', 4), @('HKLM\SYSTEM\CurrentControlSet\Services\LanmanWorkstation', 'DependOnService', 'MultiString', @('Bowser', 'MRxSmb20', 'NSI')))
+               Undo = 'Rimuovere i valori dalla GPO Member Hardening (verificare prima stampanti/NAS che usano SMBv1). La dipendenza del servizio Workstation da MRxSmb10 va tolta insieme al driver, come indicato da Microsoft, altrimenti il servizio non si avvia.' }
             @{ Id = 'HD-MB-WDIGEST'; Title = 'WDigest senza password in memoria su server e client'; Impact = 'Basso'; Gpo = 'Member Hardening'; Scope = 'Member'
                Values = @(, @('HKLM\SYSTEM\CurrentControlSet\Control\SecurityProviders\WDigest', 'UseLogonCredential', 'DWord', 0))
                Undo = 'Rimuovere UseLogonCredential dalla GPO.' }
@@ -341,8 +358,9 @@
             $bk = @()
             foreach ($v in $a.Values) {
                 $old = $null
-                try { $old = (Get-GPRegistryValue -Guid $g.Id -Key $v[0] -ValueName $v[1] -ErrorAction Stop).Value } catch { }
-                $bk += [pscustomobject]@{ Gpo = $g.DisplayName; Key = $v[0]; Name = $v[1]; Old = $old; New = $v[3] }
+                $oldType = $null
+                try { $cur = Get-GPRegistryValue -Guid $g.Id -Key $v[0] -ValueName $v[1] -ErrorAction Stop; $old = $cur.Value; $oldType = [string]$cur.Type } catch { }
+                $bk += [pscustomobject]@{ Gpo = $g.DisplayName; Key = $v[0]; Name = $v[1]; Old = $old; OldType = $oldType; New = $v[3]; Type = $v[2] }
                 Set-GPRegistryValue -Guid $g.Id -Key $v[0] -ValueName $v[1] -Type $v[2] -Value $v[3] | Out-Null
             }
             [void](Save-Backup $Config $a.Id $bk)
@@ -572,7 +590,12 @@
                 # tutti i DC devono avere la stessa versione della password prima di ruotare di nuovo
                 $vals = @()
                 foreach ($d in @(Search-Ldap $Config '(&(objectCategory=computer)(userAccountControl:1.2.840.113556.1.4.803:=8192))' @('dNSHostName'))) {
-                    try { $vals += [string]([adsi]"LDAP://$($d.dNSHostName)/$dn").Properties['pwdLastSet'].Value } catch { throw "DC $($d.dNSHostName) non raggiungibile: rotazione annullata (serve la replica su tutti i DC)." }
+                    try {
+                        $ds = New-Object System.DirectoryServices.DirectorySearcher([adsi]"LDAP://$($d.dNSHostName)/$($dn.Replace('/', '\/'))", '(objectClass=*)', [string[]]@('pwdLastSet'), [System.DirectoryServices.SearchScope]::Base)
+                        $r = $ds.FindOne()
+                        if (-not $r -or -not $r.Properties['pwdlastset'].Count) { throw 'pwdLastSet non leggibile' }
+                        $vals += [string][int64]$r.Properties['pwdlastset'][0]
+                    } catch { throw "DC $($d.dNSHostName) non raggiungibile o non leggibile: rotazione annullata (serve la replica su tutti i DC). $($_.Exception.Message)" }
                 }
                 if (@($vals | Select-Object -Unique).Count -gt 1) { throw 'La password di krbtgt non e'' ancora replicata su tutti i DC: attendere e riprovare.' }
                 $state = Get-KrbtgtState
@@ -736,7 +759,8 @@
     function Get-InactivePlan($Config, [bool]$Computers) {
         $ctx = Get-AdContext $Config
         $limit = $ctx.Now.AddDays(-[int]$Config.InactiveDays).ToFileTimeUtc()
-        $cls = if ($Computers) { '(objectCategory=computer)(!(userAccountControl:1.2.840.113556.1.4.803:=8192))(!(userAccountControl:1.2.840.113556.1.4.803:=67108864))' } else { '(objectCategory=person)(objectClass=user)' }
+        # utenti: esclusi gli account di trust tra domini (0x800), che disattivati romperebbero il trust
+        $cls = if ($Computers) { '(objectCategory=computer)(!(userAccountControl:1.2.840.113556.1.4.803:=8192))(!(userAccountControl:1.2.840.113556.1.4.803:=67108864))' } else { '(objectCategory=person)(objectClass=user)(!(userAccountControl:1.2.840.113556.1.4.803:=2048))' }
         $f = "(&$cls(!(userAccountControl:1.2.840.113556.1.4.803:=2))(|(lastLogonTimestamp<=$limit)(!(lastLogonTimestamp=*)))(pwdLastSet<=$limit))"
         $all = @(Search-Accounts $Config $f @('lastLogonTimestamp', 'pwdLastSet', 'whenCreated', 'servicePrincipalName', 'isCriticalSystemObject'))
         $created = (Get-Date).AddDays(-[int]$Config.InactiveDays)
