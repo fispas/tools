@@ -371,7 +371,7 @@ public sealed class AdminService
         var n = update.Settings ?? throw new PortalException(400, "Configurazione mancante.");
         var errors = Validate(n);
         foreach (var l in n.General?.Languages ?? Array.Empty<string>())
-            if (!_texts.SupportedLanguages.Contains(l)) errors.Add($"Lingua non disponibile: {l} (disponibili: {string.Join(", ", _texts.SupportedLanguages)}).");
+            if (l is not null && !_texts.SupportedLanguages.Contains(l)) errors.Add($"Lingua non disponibile: {l} (disponibili: {string.Join(", ", _texts.SupportedLanguages)}).");
         var texts = _texts.Sanitize(n.Branding?.Texts, errors);
         if (errors.Count > 0) throw new PortalException(400, "Configurazione non valida.", errors);
         var key = _keys.Current;
@@ -383,7 +383,7 @@ public sealed class AdminService
         var branding = n.Branding! with { Texts = texts, LogoFile = cur.Branding.LogoFile, FaviconFile = cur.Branding.FaviconFile, BackgroundFile = cur.Branding.BackgroundFile };
         var smtp = n.Smtp with { PasswordEnvelope = smtpEnv };
         var sms = n.Sms with { PasswordEnvelope = smsEnv };
-        var general = n.General with { LogoPath = null };
+        var general = n.General! with { LogoPath = null };
         var merged = n with { ConfigVersion = cur.ConfigVersion, Hosting = cur.Hosting, Admin = admin, Branding = branding, Smtp = smtp, Sms = sms, General = general };
         _settings.Save(merged);
         await Audit(AuditEventId.ConfigurationChanged, AuditOutcome.Success, null, s, ip, "Configurazione modificata dal pannello").ConfigureAwait(false);
@@ -441,10 +441,10 @@ public sealed class AdminService
         if (n.Audit.SyslogPort is < 1 or > 65535 || n.Audit.SyslogProtocol is not ("Udp" or "Tcp")) e.Add("Porta o protocollo syslog non validi (Udp o Tcp).");
         if (!IsUrl(n.Audit.WebhookUrl, httpsOnly: false)) e.Add("URL del webhook non valido.");
         if (n.Expiry is null || n.Campaign is null) { e.Add("Sezioni Scadenze o Campagna mancanti."); return e; }
-        if (n.Expiry.DaysBefore.Count is < 1 or > 10 || n.Expiry.DaysBefore.Any(d => d is < 1 or > 90)) e.Add("Giorni di preavviso: da 1 a 10 valori tra 1 e 90.");
+        if (n.Expiry.DaysBefore is null || n.Expiry.DaysBefore.Count is < 1 or > 10 || n.Expiry.DaysBefore.Any(d => d is < 1 or > 90)) e.Add("Giorni di preavviso: da 1 a 10 valori tra 1 e 90.");
         if (n.Expiry.HourOfDay is < 0 or > 23 || n.Campaign.HourOfDay is < 0 or > 23) e.Add("Ora delle attivita' pianificate: da 0 a 23.");
         if (n.Campaign.IntervalDays is < 1 or > 365 || n.Campaign.MaxPerRun is < 1 or > 5000) e.Add("Campagna: intervallo da 1 a 365 giorni, massimo da 1 a 5000 inviti.");
-        if (n.General.Languages.Count is < 1 or > 5 || n.General.Languages.Any(l => l is null || !System.Text.RegularExpressions.Regex.IsMatch(l, "^[a-z]{2}$"))) e.Add("Lingue: da 1 a 5 codici di due lettere (es. it, en).");
+        if (n.General.Languages is null || n.General.Languages.Count is < 1 or > 5 || n.General.Languages.Any(l => l is null || !System.Text.RegularExpressions.Regex.IsMatch(l, "^[a-z]{2}$"))) e.Add("Lingue: da 1 a 5 codici di due lettere (es. it, en).");
         if (!n.Features.WindowsLoginEnabled && !n.Features.PasswordLoginEnabled && (n.Features.ChangeEnabled || n.Features.EnrollmentEnabled))
             e.Add("Con accesso Windows e accesso con password entrambi disattivati, cambio password e registrazione non sono utilizzabili.");
         return e;
