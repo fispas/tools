@@ -16,7 +16,7 @@ public sealed class SlidingWindowRateLimiter
     public bool TryAcquire(string key, int limit, TimeSpan window)
     {
         ArgumentException.ThrowIfNullOrEmpty(key);
-        if (limit < 1) throw new ArgumentOutOfRangeException(nameof(limit));
+        ArgumentOutOfRangeException.ThrowIfLessThan(limit, 1);
         var now = _time.GetUtcNow();
         lock (_lock)
         {

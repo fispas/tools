@@ -39,7 +39,7 @@ public sealed class OtpChallengeStore
     public OtpChallengeStore(TimeProvider time, int maxAttempts = 5, byte[]? hmacKey = null)
     {
         _time = time ?? throw new ArgumentNullException(nameof(time));
-        if (maxAttempts < 1) throw new ArgumentOutOfRangeException(nameof(maxAttempts));
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxAttempts, 1);
         _maxAttempts = maxAttempts;
         _hmacKey = hmacKey ?? RandomNumberGenerator.GetBytes(32);
     }
@@ -50,7 +50,7 @@ public sealed class OtpChallengeStore
     {
         ArgumentException.ThrowIfNullOrEmpty(subject);
         ArgumentException.ThrowIfNullOrEmpty(channel);
-        if (ttl <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(ttl));
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(ttl, TimeSpan.Zero);
         var id = Convert.ToBase64String(RandomNumberGenerator.GetBytes(18)).Replace('+', '-').Replace('/', '_');
         var code = RandomNumberGenerator.GetInt32(0, 1_000_000).ToString("D6", System.Globalization.CultureInfo.InvariantCulture);
         var expires = _time.GetUtcNow().Add(ttl);
