@@ -20,7 +20,6 @@
     <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.14" />
     <PackageReference Include="System.DirectoryServices" Version="10.0.14" />
     <PackageReference Include="System.DirectoryServices.Protocols" Version="10.0.14" />
-    <PackageReference Include="System.Diagnostics.EventLog" Version="10.0.14" />
     <PackageReference Include="QRCoder" Version="1.6.0" />
   </ItemGroup>
 
