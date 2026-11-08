@@ -1,0 +1,71 @@
+name: analisi
+
+# Analisi statica non bloccante: PSScriptAnalyzer su tutti gli script (compatibilita' 5.1 inclusa),
+# analizzatori di sicurezza/affidabilita' .NET su SSPR e pacchetti NuGet vulnerabili.
+# I risultati sono nel log e nel riepilogo dell'esecuzione (scheda Actions).
+on:
+  push:
+    branches: [main]
+    paths:
+      - '**.ps1'
+      - '_lib/**'
+      - 'active-directory/sspr/**'
+      - '.github/workflows/analisi.yml'
+  workflow_dispatch:
+
+jobs:
+  powershell:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: PSScriptAnalyzer
+        shell: powershell
+        run: |
+          if (-not (Get-Module -ListAvailable PSScriptAnalyzer)) { Install-Module PSScriptAnalyzer -Scope CurrentUser -Force -SkipPublisherCheck }
+          Import-Module PSScriptAnalyzer
+          $exclude = @('PSAvoidUsingWriteHost', 'PSAvoidUsingPositionalParameters', 'PSUseSingularNouns', 'PSAvoidTrailingWhitespace',
+            'PSUseBOMForUnicodeEncodedFile', 'PSAvoidUsingEmptyCatchBlock', 'PSUseShouldProcessForStateChangingFunctions',
+            'PSAvoidGlobalVars', 'PSUseApprovedVerbs', 'PSAvoidDefaultValueSwitchParameter', 'PSUseOutputTypeCorrectly',
+            'PSAvoidUsingDoubleQuotesForConstantString', 'PSProvideCommentHelp', 'PSUseToExportFieldsInManifest')
+          $settings = @{
+            ExcludeRules = $exclude
+            Rules = @{ PSUseCompatibleSyntax = @{ Enable = $true; TargetVersions = @('5.1') } }
+          }
+          $files = Get-ChildItem -Recurse -Filter *.ps1 | Where-Object { $_.FullName -notmatch '\\_src\\|\\_lib\\|\\_migrator-src\\|\\_template\\' }
+          $all = foreach ($f in $files) { Invoke-ScriptAnalyzer -Path $f.FullName -Settings $settings }
+          $root = (Get-Location).Path + '\'
+          $rows = $all | Sort-Object ScriptPath, Line | ForEach-Object {
+            [pscustomobject]@{ Sev = $_.Severity; Rule = $_.RuleName; File = $_.ScriptPath.Replace($root, ''); Line = $_.Line; Msg = ($_.Message -replace '\s+', ' ') }
+          }
+          $rows | Group-Object Rule | Sort-Object Count -Descending | Format-Table Count, Name -AutoSize | Out-String -Width 300 | Write-Host
+          foreach ($r in $rows) { Write-Host ("{0}|{1}|{2}:{3}|{4}" -f $r.Sev, $r.Rule, $r.File, $r.Line, $r.Msg) }
+          $sum = "## PSScriptAnalyzer`n`n| Regola | Numero |`n|---|---|`n" + (($rows | Group-Object Rule | Sort-Object Count -Descending | ForEach-Object { "| $($_.Name) | $($_.Count) |" }) -join "`n")
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $sum
+
+  dotnet:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: active-directory/sspr
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Pacchetti vulnerabili o deprecati
+        shell: pwsh
+        run: |
+          dotnet restore src/FispaSspr.Web/FispaSspr.Web.csproj | Out-Null
+          dotnet restore tests/FispaSspr.Core.Tests/FispaSspr.Core.Tests.csproj | Out-Null
+          dotnet list src/FispaSspr.Web/FispaSspr.Web.csproj package --vulnerable --include-transitive
+          dotnet list src/FispaSspr.Web/FispaSspr.Web.csproj package --deprecated
+          dotnet list src/FispaSspr.Web/FispaSspr.Web.csproj package --outdated
+      - name: Analizzatori di sicurezza e affidabilita'
+        shell: pwsh
+        run: |
+          $log = dotnet build src/FispaSspr.Web/FispaSspr.Web.csproj -c Release --no-incremental `
+            -p:AnalysisModeSecurity=All -p:AnalysisModeReliability=All -p:AnalysisModeUsage=All -p:AnalysisModeDesign=Default 2>&1
+          $w = $log | Select-String -Pattern 'warning (CA|CS|IL|SYSLIB)\d+' | ForEach-Object { ($_.Line -replace '^.*?src\\', 'src\' -replace '\s*\[[^\]]+\]\s*$', '') } | Sort-Object -Unique
+          $w | ForEach-Object { Write-Host $_ }
+          $sum = "## Analizzatori .NET`n`nAvvisi distinti: $(@($w).Count)`n`n" + (($w | ForEach-Object { "- ``$_``" }) -join "`n")
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $sum
