@@ -393,7 +393,8 @@ public sealed class PortalService
     {
         using var gen = new QRCoder.QRCodeGenerator();
         using var data = gen.CreateQrCode(text, QRCoder.QRCodeGenerator.ECCLevel.M);
-        return new QRCoder.SvgQRCode(data).GetGraphic(5);
+        using var svg = new QRCoder.SvgQRCode(data);
+        return svg.GetGraphic(5);
     }
 
     public async Task<object> TotpConfirm(SessionData s, string? code, string? ip, CancellationToken ct)
