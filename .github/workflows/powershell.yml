@@ -40,3 +40,19 @@ jobs:
           }
           if ($bad) { exit 1 }
           Write-Host 'Sintassi OK'
+
+      - name: Compilazione dei blocchi C# (Add-Type)
+        shell: powershell
+        run: |
+          $bad = 0; $n = 0
+          foreach ($f in Get-ChildItem -Recurse -Filter *.ps1 | Where-Object { $_.FullName -notmatch '\\_src\\|\\_lib\\|\\_migrator-src\\|Setup\.ps1$' }) {
+            $text = [System.IO.File]::ReadAllText($f.FullName)
+            foreach ($m in [regex]::Matches($text, "Add-Type\s+-TypeDefinition\s+@'\r?\n(?<code>[\s\S]*?)\r?\n'@")) {
+              $n++
+              $code = $m.Groups['code'].Value -replace 'namespace\s+(\w+)', ('namespace CiCheck' + $n + '_$1')
+              try { Add-Type -TypeDefinition $code -ErrorAction Stop; Write-Host "OK $($f.Name) blocco $n" }
+              catch { Write-Host "::error file=$($f.FullName)::C# non compilabile: $($_.Exception.Message)"; $bad++ }
+            }
+          }
+          if ($bad) { exit 1 }
+          Write-Host "Blocchi C# compilati: $n"
