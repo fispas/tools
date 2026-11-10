@@ -21,7 +21,18 @@ TOOLS = {
         ('active-directory/ad-hardening/_src/head.ps1', ['active-directory/ad-hardening/_src/engine.ps1', 'active-directory/ad-hardening/_src/hardening.ps1', 'active-directory/ad-hardening/_src/extra.ps1'], 'active-directory/ad-hardening/_src/gui.ps1'),
     'active-directory/share-permissions/Set-SharePermissions.ps1':
         ('active-directory/share-permissions/_src/head.ps1', ['active-directory/share-permissions/_src/engine.ps1'], 'active-directory/share-permissions/_src/gui.ps1'),
+    'backup/veeam-hardened-repo/Initialize-VeeamHardenedRepo.ps1':
+        ('backup/veeam-hardened-repo/_src/head.ps1', ['backup/veeam-hardened-repo/_src/engine.ps1'], 'backup/veeam-hardened-repo/_src/gui.ps1'),
 }
+
+# file incorporati nei tool: '__EMBED:<percorso dal root>__' -> base64 del file (fine riga LF)
+def embed(s):
+    import base64, re
+    def rep(m):
+        with open(os.path.join(ROOT, m.group(1)), 'rb') as f:
+            data = f.read().replace(b'\r\n', b'\n')
+        return "'" + base64.b64encode(data).decode('ascii') + "'"
+    return re.sub(r"'__EMBED:([^'_][^']*?)__'", rep, s)
 
 def read(rel):
     with open(os.path.join(ROOT, rel), encoding='utf-8-sig') as f:
@@ -77,6 +88,7 @@ for out, (head, engines, gui) in TOOLS.items():
          + "\n# Motore: definito una volta, usato dalla GUI, dal runspace di esecuzione e dalla modalita' -NoGui\n$Engine = {\n"
          + lib('core_engine.ps1') + ''.join(read(e) for e in engines) + '}\n'
          + read(gui) + lib('core_main.ps1'))
+    s = embed(s)
     bad = sorted({c for c in s if ord(c) > 127})
     if bad:
         raise SystemExit(f'{out}: caratteri non ASCII {bad}')

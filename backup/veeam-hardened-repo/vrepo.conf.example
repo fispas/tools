@@ -1,0 +1,37 @@
+# vrepo-setup.sh - esempio di configurazione (valori fittizi)
+# Uso: sudo ./vrepo-setup.sh --config vrepo.conf [--dry-run] <comando>
+# Il wizard salva le risposte (senza password) in /etc/vrepo-setup/vrepo.conf e le ripropone.
+
+# --- iSCSI
+INITIATOR_NAME=""                         # vuoto = mantiene quello generato da Ubuntu
+ISCSI_PORTALS="10.10.1.10 10.10.2.10"     # un IP per percorso
+ISCSI_PORT="3260"
+ISCSI_TARGETS="iqn.2004-04.com.qnap:*:veeam*"   # vuoto = tutti i target scoperti
+ONLY_LISTED_PORTALS="yes"                 # login solo sugli IP sopra, non sulle altre interfacce del NAS
+CHAP_USER=""
+CHAP_PASSWORD=""
+
+# --- multipath
+MULTIPATH="auto"                          # auto | yes | no
+MULTIPATH_PROFILE="qnap"                  # qnap | generic
+MULTIPATH_ALIAS="yes"                     # /dev/mapper/<nome LUN>
+
+# --- LUN
+LUN_PREFIX="veeam-repo"                   # nomi proposti: veeam-repo01, veeam-repo02...
+LUN_NAMES=""                              # es. 36e843b6a1b2c3d4e5f60718293a4b5c6=repo-giornaliero;sdc=repo-mensile
+MOUNT_BASE="/mnt"
+PARTITION="yes"
+FORCE_FORMAT="no"                         # yes = consente di cancellare LUN con dati (mai quelle montate)
+
+# --- utente e sistema
+VEEAM_USER="veeambck"
+VEEAM_PASSWORD=""                         # vuoto = generata (consigliato)
+NTP_SERVERS="dc01.contoso.local"
+TIMEZONE="Europe/Rome"
+
+# --- blindatura
+SSH_DISABLE="yes"
+LOCK_VEEAM_PASSWORD="yes"
+LOCKDOWN_FORCE="no"
+REMOVE_TARGETS=""
+REMOVE_DISCOVERY="no"

@@ -20,6 +20,11 @@ Regole complete in [CLAUDE.md](CLAUDE.md). Per un nuovo tool si parte da [`_temp
 | [fslogix/local-to-fslogix](rds/fslogix/local-to-fslogix/) | Migra profili locali in FSLogix con frx.exe, profili letti da ProfileList: GUI configurabile, simulazione, -NoGui | 2.0.0 |
 | [winauditpro](rds/winauditpro/) | Audit Windows Server / RDS con report HTML, ottimizzazioni apply/revert, confronto baseline: pannello, -NoGui | 2.1.1 |
 
+### Backup — [`backup/`](backup/)
+| Tool | Descrizione | Versione |
+|---|---|---|
+| [veeam-hardened-repo](backup/veeam-hardened-repo/) | Prepara il server Ubuntu "vrepo" per un Veeam Hardened Repository: iSCSI, multipath con alias, LUN XFS reflink con fstab e mount protetto, utente con sudo temporaneo e blindatura. Funziona da GUI Windows via SSH (analisi, passi, simulazione) oppure con il wizard `vrepo-setup.sh` direttamente sul server | 1.0.0 |
+
 ### Windows — [`windows/`](windows/)
 | Tool | Descrizione | Versione |
 |---|---|---|
